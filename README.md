@@ -48,16 +48,9 @@ Node.js version: 20
 
 ## 自动部署
 
-仓库已包含 GitHub Actions 配置：`.github/workflows/cloudflare-pages.yml`。
+如果你使用 Cloudflare Pages 自带的 GitHub 集成，只需要在 Cloudflare Pages 里连接 GitHub 仓库，并将生产分支设置为 `main`。
 
-需要在 GitHub 仓库的 `Settings -> Secrets and variables -> Actions` 添加：
-
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-
-然后在 Cloudflare Pages 创建项目名 `cyanyi-ai-image`。之后每次推送到 `main` 分支，GitHub Actions 会自动构建并部署到 Cloudflare Pages。
-
-如果你使用 Cloudflare Pages 自带的 GitHub 集成，也可以不用 Actions，只需要在 Cloudflare Pages 里连接 GitHub 仓库并开启自动部署。
+之后每次推送到 `main` 分支，Cloudflare Pages 会自动构建并部署。
 
 ## 配置
 
