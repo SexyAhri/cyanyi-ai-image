@@ -162,6 +162,22 @@ export default function App() {
               </span>
               收藏
             </button>
+            <a
+              href="https://ai.cyanyi.com/"
+              className="cy-sidebar-link"
+              target="_blank"
+              rel="noreferrer"
+              title="打开 CyanYI 中转"
+            >
+              <span className="cy-sidebar-link-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M14 5h5v5" />
+                  <path d="M10 14 19 5" />
+                  <path d="M19 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4" />
+                </svg>
+              </span>
+              CyanYI 中转
+            </a>
           </nav>
 
           <div className="cy-sidebar-card">
