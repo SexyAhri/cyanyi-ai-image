@@ -7,6 +7,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Docker platforms to build"
+        required: false
+        default: "linux/amd64"
 
 permissions:
   contents: read
@@ -14,6 +19,7 @@ permissions:
 
 env:
   DOCKER_BUILD_SUMMARY: true
+  DOCKER_PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'linux/amd64' }}
 
 jobs:
   build:
@@ -37,6 +43,11 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+        env:
+          VITE_DEFAULT_API_URL: ${{ vars.VITE_DEFAULT_API_URL }}
+          VITE_API_PROXY_AVAILABLE: ${{ vars.VITE_API_PROXY_AVAILABLE || 'false' }}
+          VITE_API_PROXY_LOCKED: ${{ vars.VITE_API_PROXY_LOCKED || 'false' }}
+          VITE_SHOW_DEFAULT_CONFIG_ONLY: ${{ vars.VITE_SHOW_DEFAULT_CONFIG_ONLY || 'false' }}
 
       - name: Set image name
         run: echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
@@ -66,14 +77,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./Dockerfile.runtime
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ env.DOCKER_PLATFORMS }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VITE_DEFAULT_API_URL=${{ vars.VITE_DEFAULT_API_URL }}
-            VITE_API_PROXY_AVAILABLE=${{ vars.VITE_API_PROXY_AVAILABLE || 'false' }}
-            VITE_API_PROXY_LOCKED=${{ vars.VITE_API_PROXY_LOCKED || 'false' }}
-            VITE_SHOW_DEFAULT_CONFIG_ONLY=${{ vars.VITE_SHOW_DEFAULT_CONFIG_ONLY || 'false' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

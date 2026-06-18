@@ -2,7 +2,6 @@
 .github
 .wrangler
 node_modules
-dist
 coverage
 .env
 .env.*
@@ -12,6 +11,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 Dockerfile*
+!Dockerfile.runtime
 docker-compose*.yml
 .DS_Store
 Thumbs.db
+*.local
