@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { initStore, useStore } from './store'
 import { activateFirstImportedProfile, buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
 import { isDefaultConfigOnlyEnabled, mergeImportedSettings } from './lib/apiProfiles'
@@ -8,20 +8,35 @@ import Header from './components/Header'
 import SearchBar from './components/SearchBar'
 import TaskGrid from './components/TaskGrid'
 import InputBar from './components/InputBar'
-import DetailModal from './components/DetailModal'
-import Lightbox from './components/Lightbox'
-import SettingsModal from './components/SettingsModal'
 import ConfirmDialog from './components/ConfirmDialog'
 import Toast from './components/Toast'
-import MaskEditorModal from './components/MaskEditorModal'
-import ImageContextMenu from './components/ImageContextMenu'
-import SupportPromptModal from './components/SupportPromptModal'
 import AgentWorkspace from './components/AgentWorkspace'
-import { FavoriteCollectionPickerModal, FavoriteCollectionsView, ManageCollectionsModal } from './components/FavoriteCollections'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
 
 let customProviderConfigUrlImportStarted = false
 const LOGO_URL = 'https://img.icons8.com/?size=100&id=eoxMN35Z6JKg&format=png&color=000000'
+const DetailModal = lazy(() => import('./components/DetailModal'))
+const Lightbox = lazy(() => import('./components/Lightbox'))
+const SettingsModal = lazy(() => import('./components/SettingsModal'))
+const MaskEditorModal = lazy(() => import('./components/MaskEditorModal'))
+const ImageContextMenu = lazy(() => import('./components/ImageContextMenu'))
+const SupportPromptModal = lazy(() => import('./components/SupportPromptModal'))
+const FavoriteCollectionsView = lazy(() => import('./components/FavoriteCollections').then((module) => ({ default: module.FavoriteCollectionsView })))
+const FavoriteCollectionPickerModal = lazy(() => import('./components/FavoriteCollections').then((module) => ({ default: module.FavoriteCollectionPickerModal })))
+const ManageCollectionsModal = lazy(() => import('./components/FavoriteCollections').then((module) => ({ default: module.ManageCollectionsModal })))
+
+function ImageContextMenuLoader() {
+  const [ready, setReady] = useState(false)
+
+  useEffect(() => {
+    const scheduleIdle = window.requestIdleCallback ?? ((callback: IdleRequestCallback) => window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 0 }), 1_000))
+    const cancelIdle = window.cancelIdleCallback ?? window.clearTimeout
+    const idleId = scheduleIdle(() => setReady(true))
+    return () => cancelIdle(idleId)
+  }, [])
+
+  return ready ? <ImageContextMenu /> : null
+}
 
 export default function App() {
   const setSettings = useStore((s) => s.setSettings)
@@ -32,6 +47,13 @@ export default function App() {
   const setAppMode = useStore((s) => s.setAppMode)
   const setFilterFavorite = useStore((s) => s.setFilterFavorite)
   const setActiveFavoriteCollectionId = useStore((s) => s.setActiveFavoriteCollectionId)
+  const detailTaskId = useStore((s) => s.detailTaskId)
+  const lightboxImageId = useStore((s) => s.lightboxImageId)
+  const showSettings = useStore((s) => s.showSettings)
+  const supportPromptOpen = useStore((s) => s.supportPromptOpen)
+  const favoritePickerTaskIds = useStore((s) => s.favoritePickerTaskIds)
+  const isManageCollectionsModalOpen = useStore((s) => s.isManageCollectionsModalOpen)
+  const maskEditorImageId = useStore((s) => s.maskEditorImageId)
   useGlobalClickSuppression()
 
   useEffect(() => {
@@ -201,23 +223,29 @@ export default function App() {
                   </div>
                 </div>
                 <SearchBar showFavoriteControls={false} />
-                {filterFavorite && !activeFavoriteCollectionId ? <FavoriteCollectionsView /> : <TaskGrid />}
+                {filterFavorite && !activeFavoriteCollectionId ? (
+                  <Suspense fallback={null}>
+                    <FavoriteCollectionsView />
+                  </Suspense>
+                ) : <TaskGrid />}
               </section>
             )}
           </main>
         </div>
       </div>
       <InputBar />
-      <DetailModal />
-      <Lightbox />
-      <SettingsModal />
       <ConfirmDialog />
-      <SupportPromptModal />
-      <FavoriteCollectionPickerModal />
-      <ManageCollectionsModal />
       <Toast />
-      <MaskEditorModal />
-      <ImageContextMenu />
+      <Suspense fallback={null}>
+        {detailTaskId && <DetailModal />}
+        {lightboxImageId && <Lightbox />}
+        {showSettings && <SettingsModal />}
+        {supportPromptOpen && <SupportPromptModal />}
+        {favoritePickerTaskIds && <FavoriteCollectionPickerModal />}
+        {isManageCollectionsModalOpen && <ManageCollectionsModal />}
+        {maskEditorImageId && <MaskEditorModal />}
+        <ImageContextMenuLoader />
+      </Suspense>
     </>
   )
 }

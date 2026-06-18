@@ -1,7 +1,32 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_PARAMS } from '../types'
+import { DEFAULT_PARAMS, type ApiProfile, type AppSettings } from '../types'
 import { DEFAULT_SETTINGS } from './apiProfiles'
 import { callImageApi } from './api'
+
+function withOpenAIProfile(profileOverrides: Partial<ApiProfile>, settingsOverrides: Partial<AppSettings> = {}): AppSettings {
+  const activeProfileId = DEFAULT_SETTINGS.activeProfileId
+  const profiles = DEFAULT_SETTINGS.profiles.map((profile) =>
+    profile.id === activeProfileId ? { ...profile, ...profileOverrides } : profile,
+  )
+  const activeProfile = profiles.find((profile) => profile.id === activeProfileId)
+  if (!activeProfile) throw new Error('Missing default API profile')
+
+  return {
+    ...DEFAULT_SETTINGS,
+    ...settingsOverrides,
+    baseUrl: activeProfile.baseUrl,
+    apiKey: activeProfile.apiKey,
+    model: activeProfile.model,
+    timeout: activeProfile.timeout,
+    apiMode: activeProfile.apiMode,
+    codexCli: activeProfile.codexCli,
+    apiProxy: activeProfile.apiProxy,
+    streamImages: activeProfile.streamImages,
+    streamPartialImages: activeProfile.streamPartialImages,
+    profiles,
+    activeProfileId,
+  }
+}
 
 describe('callImageApi', () => {
   afterEach(() => {
@@ -51,7 +76,11 @@ describe('callImageApi', () => {
     }))
 
     const result = await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: true },
+      settings: withOpenAIProfile({
+        apiKey: 'test-key',
+        apiMode: 'images',
+        codexCli: true,
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -82,7 +111,11 @@ describe('callImageApi', () => {
     }))
 
     const result = await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: true },
+      settings: withOpenAIProfile({
+        apiKey: 'test-key',
+        apiMode: 'images',
+        codexCli: true,
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -115,18 +148,12 @@ describe('callImageApi', () => {
     const partialImages: string[] = []
 
     const result = await callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
+      settings: withOpenAIProfile({
         apiKey: 'test-key',
+        apiMode: 'images',
         streamImages: true,
         streamPartialImages: 3,
-        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
-          ...profile,
-          apiKey: 'test-key',
-          streamImages: true,
-          streamPartialImages: 3,
-        })),
-      },
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -162,16 +189,11 @@ describe('callImageApi', () => {
     }))
 
     await expect(callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
+      settings: withOpenAIProfile({
         apiKey: 'test-key',
+        apiMode: 'images',
         streamImages: true,
-        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
-          ...profile,
-          apiKey: 'test-key',
-          streamImages: true,
-        })),
-      },
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -185,16 +207,11 @@ describe('callImageApi', () => {
     }))
 
     await expect(callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
+      settings: withOpenAIProfile({
         apiKey: 'test-key',
+        apiMode: 'images',
         streamImages: true,
-        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
-          ...profile,
-          apiKey: 'test-key',
-          streamImages: true,
-        })),
-      },
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -208,16 +225,11 @@ describe('callImageApi', () => {
     }))
 
     await expect(callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
+      settings: withOpenAIProfile({
         apiKey: 'test-key',
+        apiMode: 'images',
         streamImages: true,
-        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
-          ...profile,
-          apiKey: 'test-key',
-          streamImages: true,
-        })),
-      },
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -237,16 +249,11 @@ describe('callImageApi', () => {
     }))
 
     const result = await callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
+      settings: withOpenAIProfile({
         apiKey: 'test-key',
+        apiMode: 'images',
         streamImages: true,
-        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
-          ...profile,
-          apiKey: 'test-key',
-          streamImages: true,
-        })),
-      },
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -278,16 +285,11 @@ describe('callImageApi', () => {
     }))
 
     const result = await callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
+      settings: withOpenAIProfile({
         apiKey: 'test-key',
+        apiMode: 'images',
         streamImages: true,
-        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
-          ...profile,
-          apiKey: 'test-key',
-          streamImages: true,
-        })),
-      },
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -327,18 +329,12 @@ describe('callImageApi', () => {
     const partials: Array<{ image: string; requestIndex?: number }> = []
 
     const result = await callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
+      settings: withOpenAIProfile({
         apiKey: 'test-key',
+        apiMode: 'images',
         streamImages: true,
         streamPartialImages: 1,
-        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
-          ...profile,
-          apiKey: 'test-key',
-          streamImages: true,
-          streamPartialImages: 1,
-        })),
-      },
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS, n: 2 },
       inputImageDataUrls: [],
@@ -377,7 +373,11 @@ describe('callImageApi', () => {
     })
 
     const result = await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: true },
+      settings: withOpenAIProfile({
+        apiKey: 'test-key',
+        apiMode: 'images',
+        codexCli: true,
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS, n: 3 },
       inputImageDataUrls: [],
@@ -544,12 +544,12 @@ describe('callImageApi', () => {
     }))
 
     await callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
+      settings: withOpenAIProfile({
         apiKey: 'test-key',
+        apiMode: 'images',
         apiProxy: true,
         baseUrl: 'http://api.example.com/v1',
-      },
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -571,12 +571,12 @@ describe('callImageApi', () => {
     }))
 
     await callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
+      settings: withOpenAIProfile({
         apiKey: 'test-key',
+        apiMode: 'images',
         apiProxy: true,
         baseUrl: '',
-      },
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -698,12 +698,12 @@ describe('callImageApi', () => {
     }))
 
     await callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
+      settings: withOpenAIProfile({
         apiKey: 'test-key',
+        apiMode: 'images',
         apiProxy: false,
         baseUrl: 'http://api.example.com/v1',
-      },
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -724,7 +724,10 @@ describe('callImageApi', () => {
     }))
 
     await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      settings: withOpenAIProfile({
+        apiKey: 'test-key',
+        apiMode: 'images',
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -747,12 +750,12 @@ describe('callImageApi', () => {
     }))
 
     await callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
+      settings: withOpenAIProfile({
         apiKey: 'test-key',
+        apiMode: 'images',
         apiProxy: true,
         baseUrl: 'http://api.example.com/v1',
-      },
+      }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],

@@ -43,12 +43,12 @@ import {
 } from './lib/db'
 import { callImageApi } from './lib/api'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
-import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
+import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi, resolveAgentPromptImageReferences } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
 import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
-import { validateMaskMatchesImage } from './lib/canvasImage'
+import { resizeImageDataUrl, validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
 import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
@@ -74,6 +74,11 @@ const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
 const SUPPORT_PROMPT_IMAGE_THRESHOLD = 50
 const AGENT_INPUT_DRAFT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000
+const AGENT_CONTEXT_IMAGE_HISTORY_ROUNDS = 2
+const AGENT_CONTEXT_INPUT_SOFT_LIMIT_BYTES = 4_500_000
+const AGENT_CONTEXT_REQUEST_HARD_LIMIT_BYTES = 4_800_000
+const AGENT_CONTEXT_MAX_IMAGE_BYTES_DEFAULT = 700_000
+const AGENT_CONTEXT_MAX_IMAGE_BYTES_TIGHT = 260_000
 const AGENT_ROUND_IMAGE_MENTION_RE = /@(?:第)?(\d+)轮图(\d+)/g
 const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -86,6 +91,12 @@ const AGENT_STOPPED_MESSAGE = '已停止生成。'
 const AGENT_CONVERSATION_TITLE_MAX_LENGTH = 28
 const ERROR_TOAST_MAX_LENGTH = 80
 type ToastType = 'info' | 'success' | 'error'
+type AgentContextNotice = {
+  conversationId: string
+  roundId: string
+  message: string
+  createdAt: number
+}
 type AgentInputDraft = {
   prompt: string
   inputImages: InputImage[]
@@ -831,6 +842,7 @@ interface AppState {
   setActiveAgentRoundId: (conversationId: string, roundId: string | null) => void
   renameAgentConversation: (id: string, title: string) => void
   deleteAgentConversation: (id: string) => void
+  clearAgentConversation: (id: string) => void
   setAgentSidebarCollapsed: (collapsed: boolean) => void
   setAgentAssetTab: (tab: 'references' | 'outputs') => void
   setAgentAssetPanelCollapsed: (collapsed: boolean) => void
@@ -887,6 +899,7 @@ interface AppState {
   supportPromptOpen: boolean
   supportPromptDismissed: boolean
   supportPromptSkippedForImportedData: boolean
+  agentContextNotice: AgentContextNotice | null
   setSupportPromptOpen: (v: boolean) => void
   dismissSupportPrompt: () => void
 
@@ -1450,6 +1463,29 @@ export const useStore = create<AppState>()(
           ...(activeDeleted ? clearInputDraftState() : {}),
         }
       }),
+      clearAgentConversation: (id) => set((state) => {
+        const now = Date.now()
+        const agentInputDrafts = {
+          ...state.agentInputDrafts,
+          [id]: normalizeAgentInputDraft(clearInputDraftState(), now),
+        }
+        return {
+          agentConversations: state.agentConversations.map((conversation) =>
+            conversation.id === id
+              ? {
+                  ...conversation,
+                  activeRoundId: null,
+                  rounds: [],
+                  messages: [],
+                  updatedAt: now,
+                }
+              : conversation,
+          ),
+          agentInputDrafts,
+          agentEditingRoundId: state.activeAgentConversationId === id ? null : state.agentEditingRoundId,
+          ...(state.activeAgentConversationId === id ? clearInputDraftState() : {}),
+        }
+      }),
       setAgentSidebarCollapsed: (agentSidebarCollapsed) => set({ agentSidebarCollapsed }),
       setAgentAssetTab: (agentAssetTab) => set({ agentAssetTab }),
       setAgentAssetPanelCollapsed: (agentAssetPanelCollapsed) => set({ agentAssetPanelCollapsed }),
@@ -1580,6 +1616,7 @@ export const useStore = create<AppState>()(
       supportPromptOpen: false,
       supportPromptDismissed: false,
       supportPromptSkippedForImportedData: false,
+      agentContextNotice: null,
       setSupportPromptOpen: (supportPromptOpen) => set({ supportPromptOpen }),
       dismissSupportPrompt: () => set({ supportPromptOpen: false, supportPromptDismissed: true }),
 
@@ -2536,7 +2573,11 @@ async function generateAgentConversationTitle(
     return { agentGeneratingTitleIds: next }
   })
   try {
-    const imageDataUrls = await readAgentImageDataUrls(inputImageIds)
+    const imageDataUrls = await readAgentContextImageDataUrls(inputImageIds, {
+      maxWidth: 768,
+      maxHeight: 768,
+      maxEncodedBytesPerImage: 450_000,
+    })
     const title = await callAgentConversationTitleApi({
       settings: requestSettings,
       profile: activeProfile,
@@ -2825,8 +2866,86 @@ async function readAgentImageDataUrls(ids: string[]) {
   return dataUrls
 }
 
-async function createAgentUserInputItem(conversation: AgentConversation, round: AgentRound, message: AgentMessage, tasks: TaskRecord[]) {
-  const imageDataUrls = await readAgentImageDataUrls(round.inputImageIds)
+async function readAgentContextImageDataUrls(
+  ids: string[],
+  opts: {
+    maxWidth?: number
+    maxHeight?: number
+    maxEncodedBytesPerImage?: number
+  } = {},
+) {
+  const {
+    maxWidth = 1024,
+    maxHeight = 1024,
+    maxEncodedBytesPerImage = 700_000,
+  } = opts
+  const dataUrls: string[] = []
+
+  for (const id of ids) {
+    const original = await ensureImageCached(id)
+    if (!original) continue
+
+    let candidate = original
+    if (candidate.length > maxEncodedBytesPerImage) {
+      try {
+        candidate = await resizeImageDataUrl(candidate, {
+          maxWidth,
+          maxHeight,
+          mimeType: 'image/jpeg',
+          quality: 0.8,
+        })
+      } catch {
+        candidate = original
+      }
+    }
+
+    if (candidate.length > maxEncodedBytesPerImage) {
+      try {
+        candidate = await resizeImageDataUrl(candidate, {
+          maxWidth: Math.min(maxWidth, 768),
+          maxHeight: Math.min(maxHeight, 768),
+          mimeType: 'image/jpeg',
+          quality: 0.72,
+        })
+      } catch {
+        candidate = original
+      }
+    }
+
+    dataUrls.push(candidate)
+  }
+
+  return dataUrls
+}
+
+function estimateSerializedSize(value: unknown) {
+  try {
+    return JSON.stringify(value).length
+  } catch {
+    return Number.POSITIVE_INFINITY
+  }
+}
+
+function isAgentContextSizeLimitError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return /request body exceeds your tier limit/i.test(message) || /\b5MB\b/i.test(message)
+}
+
+function getAgentContextSizeLimitErrorMessage() {
+  return '当前 Agent 上下文图片和历史内容过大，已超过接口请求体限制。请减少参考图、清空当前对话，或从新对话继续。'
+}
+
+async function createAgentUserInputItem(
+  conversation: AgentConversation,
+  round: AgentRound,
+  message: AgentMessage,
+  tasks: TaskRecord[],
+  options: {
+    includeImages?: boolean
+    imageOptions?: Parameters<typeof readAgentContextImageDataUrls>[1]
+  } = {},
+) {
+  const imageDataUrls = options.includeImages === false ? [] : await readAgentContextImageDataUrls(round.inputImageIds, options.imageOptions)
   const rounds = getAgentRoundPath(conversation, round.id)
   const text = replaceAgentPromptImageReferencesForApi(message.content, round, rounds, tasks)
   const referenceText = round.inputImageIds.length > 0
@@ -2841,7 +2960,14 @@ async function createAgentUserInputItem(conversation: AgentConversation, round: 
   }
 }
 
-async function createAgentGeneratedImagesInputItem(round: AgentRound, tasks: TaskRecord[]) {
+async function createAgentGeneratedImagesInputItem(
+  round: AgentRound,
+  tasks: TaskRecord[],
+  options: {
+    includeImages?: boolean
+    imageOptions?: Parameters<typeof readAgentContextImageDataUrls>[1]
+  } = {},
+) {
   const contentParts: Array<{ type: string; text?: string; image_url?: string }> = []
   let imageIndex = 0
   for (const taskId of round.outputTaskIds) {
@@ -2852,8 +2978,8 @@ async function createAgentGeneratedImagesInputItem(round: AgentRound, tasks: Tas
       continue
     }
     for (const imageId of task.outputImages) {
-      const dataUrl = await ensureImageCached(imageId)
-      if (dataUrl) {
+      const [dataUrl] = options.includeImages === false ? [] : await readAgentContextImageDataUrls([imageId], options.imageOptions)
+      if (dataUrl && options.includeImages !== false) {
         contentParts.push({ type: 'input_image', image_url: dataUrl })
       }
       const refId = getAgentGeneratedImageReferenceId(round, imageIndex)
@@ -2881,7 +3007,7 @@ async function createAgentBatchImagesInputItem(round: AgentRound, tasks: TaskRec
     const task = tasks.find((item) => item.id === taskId)
     if (!task || task.status !== 'done') continue
     for (const imgId of task.outputImages) {
-      const dataUrl = await ensureImageCached(imgId)
+      const [dataUrl] = await readAgentContextImageDataUrls([imgId])
       if (dataUrl) {
         contentParts.push({ type: 'input_image', image_url: dataUrl })
       }
@@ -3112,15 +3238,57 @@ function getAgentRoundResponseOutput(round: AgentRound, tasks: TaskRecord[]): Re
   return null
 }
 
-async function buildAgentApiInput(conversation: AgentConversation, currentRound: AgentRound, tasks: TaskRecord[]): Promise<unknown[]> {
+type AgentApiInputBuildStrategy = {
+  historyRoundsWithImages: number
+  includeReferencedImages: boolean
+  maxImageBytes: number
+  maxWidth: number
+  maxHeight: number
+}
+type AgentApiInputBuildResult = {
+  input: unknown[]
+  wasReduced: boolean
+  inputSize: number
+}
+
+async function buildAgentApiInputWithStrategy(
+  conversation: AgentConversation,
+  currentRound: AgentRound,
+  tasks: TaskRecord[],
+  strategy: AgentApiInputBuildStrategy,
+): Promise<unknown[]> {
   const input: unknown[] = []
   const rounds = getAgentRoundPath(conversation, currentRound.id)
+  const referencedImageIds = new Set(resolveAgentPromptImageReferences(currentRound.prompt, rounds, tasks))
+  const recentImageRoundIds = new Set(
+    rounds
+      .slice(Math.max(0, rounds.length - strategy.historyRoundsWithImages))
+      .map((round) => round.id),
+  )
+  const referencedImageRoundIds = new Set(
+    strategy.includeReferencedImages
+      ? rounds
+        .filter((round) => collectAgentRoundOutputImageSlots(round, tasks).some((imageId) => imageId != null && referencedImageIds.has(imageId)))
+        .map((round) => round.id)
+      : [],
+  )
 
   for (const round of rounds) {
     const userMessage = conversation.messages.find((message) => message.id === round.userMessageId)
     if (!userMessage) continue
+    const shouldIncludeRoundImages =
+      round.id === currentRound.id ||
+      recentImageRoundIds.has(round.id) ||
+      referencedImageRoundIds.has(round.id)
 
-    input.push(await createAgentUserInputItem(conversation, round, userMessage, tasks))
+    input.push(await createAgentUserInputItem(conversation, round, userMessage, tasks, {
+      includeImages: shouldIncludeRoundImages,
+      imageOptions: {
+        maxWidth: strategy.maxWidth,
+        maxHeight: strategy.maxHeight,
+        maxEncodedBytesPerImage: strategy.maxImageBytes,
+      },
+    }))
     if (round.id === currentRound.id) continue
 
     const output = getAgentRoundResponseOutput(round, tasks)
@@ -3148,12 +3316,92 @@ async function buildAgentApiInput(conversation: AgentConversation, currentRound:
 
     // Inject generated images as a separate user message with input_image parts
     if (round.outputTaskIds.length > 0) {
-      const imagesItem = await createAgentGeneratedImagesInputItem(round, tasks)
+      const imagesItem = await createAgentGeneratedImagesInputItem(round, tasks, {
+        includeImages: shouldIncludeRoundImages,
+        imageOptions: {
+          maxWidth: strategy.maxWidth,
+          maxHeight: strategy.maxHeight,
+          maxEncodedBytesPerImage: strategy.maxImageBytes,
+        },
+      })
       if (imagesItem) input.push(imagesItem)
     }
   }
 
   return input
+}
+
+async function buildAgentApiInput(conversation: AgentConversation, currentRound: AgentRound, tasks: TaskRecord[]): Promise<AgentApiInputBuildResult> {
+  const strategies: AgentApiInputBuildStrategy[] = [
+    {
+      historyRoundsWithImages: AGENT_CONTEXT_IMAGE_HISTORY_ROUNDS,
+      includeReferencedImages: true,
+      maxImageBytes: AGENT_CONTEXT_MAX_IMAGE_BYTES_DEFAULT,
+      maxWidth: 1024,
+      maxHeight: 1024,
+    },
+    {
+      historyRoundsWithImages: 1,
+      includeReferencedImages: true,
+      maxImageBytes: 420_000,
+      maxWidth: 896,
+      maxHeight: 896,
+    },
+    {
+      historyRoundsWithImages: 0,
+      includeReferencedImages: true,
+      maxImageBytes: AGENT_CONTEXT_MAX_IMAGE_BYTES_TIGHT,
+      maxWidth: 768,
+      maxHeight: 768,
+    },
+    {
+      historyRoundsWithImages: 0,
+      includeReferencedImages: false,
+      maxImageBytes: AGENT_CONTEXT_MAX_IMAGE_BYTES_TIGHT,
+      maxWidth: 640,
+      maxHeight: 640,
+    },
+  ]
+
+  let fallbackInput: unknown[] = []
+  let fallbackSize = 0
+  for (let index = 0; index < strategies.length; index += 1) {
+    const strategy = strategies[index]
+    const candidate = await buildAgentApiInputWithStrategy(conversation, currentRound, tasks, strategy)
+    const size = estimateSerializedSize(candidate)
+    fallbackInput = candidate
+    fallbackSize = size
+    if (size <= AGENT_CONTEXT_INPUT_SOFT_LIMIT_BYTES) {
+      return {
+        input: candidate,
+        wasReduced: index > 0,
+        inputSize: size,
+      }
+    }
+  }
+
+  return {
+    input: fallbackInput,
+    wasReduced: true,
+    inputSize: fallbackSize,
+  }
+}
+
+function stripInputImagesFromAgentInput(input: unknown[]): unknown[] {
+  return input.map((item) => {
+    if (!isRecord(item)) return item
+    if (!Array.isArray(item.content)) return item
+    return {
+      ...item,
+      content: item.content.filter((part) => !(isRecord(part) && part.type === 'input_image')),
+    }
+  })
+}
+
+function buildReducedAgentInput(input: unknown[]): unknown[] {
+  const noImages = stripInputImagesFromAgentInput(input)
+  if (estimateSerializedSize(noImages) <= AGENT_CONTEXT_REQUEST_HARD_LIMIT_BYTES) return noImages
+  return noImages
 }
 
 export async function submitAgentMessage() {
@@ -3438,7 +3686,18 @@ async function executeAgentRound(
     const maskDataUrl = round.maskImageId ? await ensureImageCached(round.maskImageId) : undefined
     if (round.maskImageId && !maskDataUrl) throw new Error('遮罩图片已不存在')
 
-    const apiInput = await buildAgentApiInput(conversation, round, latestState.tasks)
+    const apiInputBuild = await buildAgentApiInput(conversation, round, latestState.tasks)
+    const apiInput = apiInputBuild.input
+    if (apiInputBuild.wasReduced) {
+      useStore.setState({
+        agentContextNotice: {
+          conversationId,
+          roundId,
+          message: `已自动缩减 Agent 上下文，当前请求约 ${(apiInputBuild.inputSize / 1024 / 1024).toFixed(1)} MB。`,
+          createdAt: Date.now(),
+        },
+      })
+    }
     if (controller.signal.aborted) throw createAgentAbortError()
     const existingAssistantMessage = round.assistantMessageId
       ? conversation.messages.find((message) => message.id === round.assistantMessageId) ?? null
@@ -3609,7 +3868,7 @@ async function executeAgentRound(
             const currentRefId = getAgentCurrentReferenceId(r, imgIdx)
             if (currentRefId === refId) {
               const imageId = r.inputImageIds[imgIdx]
-              const dataUrl = await ensureImageCached(imageId)
+              const [dataUrl] = await readAgentContextImageDataUrls([imageId])
               if (dataUrl) dataUrls.push(dataUrl)
               imageIds.push(imageId)
             }
@@ -3620,7 +3879,7 @@ async function executeAgentRound(
             if (generatedRefId === refId) {
               const imageId = outputImages[imgIdx]
               if (!imageId) continue
-              const dataUrl = await ensureImageCached(imageId)
+              const [dataUrl] = await readAgentContextImageDataUrls([imageId])
               if (dataUrl) dataUrls.push(dataUrl)
               imageIds.push(imageId)
             }
@@ -3738,15 +3997,14 @@ async function executeAgentRound(
       if (controller.signal.aborted) throw createAgentAbortError()
       const textBeforeResponse = accumulatedText
       let currentResponseOutputItems: ResponsesOutputItem[] = []
-      const result = await callAgentResponsesApi({
+      const requestOptions = {
         settings: requestSettings,
         profile: activeProfile,
         params,
-        input: apiInputForTurn,
         maskDataUrl,
         signal: controller.signal,
         onTextDelta: shouldStreamAssistantMessage
-          ? (delta) => {
+          ? (delta: string) => {
               if (controller.signal.aborted) return
               if (pendingToolTextSeparator && delta && accumulatedText.trim()) {
                 accumulatedText += '\n\n'
@@ -3758,7 +4016,7 @@ async function executeAgentRound(
             }
           : undefined,
         onOutputItems: shouldStreamAssistantMessage
-          ? (outputItems) => {
+          ? (outputItems: ResponsesOutputItem[]) => {
               if (controller.signal.aborted) return
               currentResponseOutputItems = outputItems
               updateAgentConversation(conversationId, (current) => ({
@@ -3768,13 +4026,13 @@ async function executeAgentRound(
             }
           : undefined,
         onImageToolStarted: shouldStreamAssistantMessage
-          ? async ({ toolCallId }) => {
+          ? async ({ toolCallId }: { toolCallId: string }) => {
               if (controller.signal.aborted) return
               await ensureStreamingAgentTask(toolCallId)
             }
           : undefined,
         onImagePartialImage: shouldStreamAssistantMessage
-          ? async ({ toolCallId, image, partialImageIndex }) => {
+          ? async ({ toolCallId, image, partialImageIndex }: { toolCallId: string; image: string; partialImageIndex?: number }) => {
               if (controller.signal.aborted) return
               const taskId = await ensureStreamingAgentTask(toolCallId)
               if (controller.signal.aborted) return
@@ -3785,20 +4043,52 @@ async function executeAgentRound(
             }
           : undefined,
         onImageToolCompleted: shouldStreamAssistantMessage
-          ? async (image) => {
+          ? async (image: AgentApiResultImage) => {
               if (controller.signal.aborted) return
               await completeAgentImageTask(image)
             }
           : undefined,
         onImageToolFailed: shouldStreamAssistantMessage
-          ? async ({ toolCallId, error }) => {
+          ? async ({ toolCallId, error }: { toolCallId: string; error: string }) => {
               if (controller.signal.aborted) return
               await ensureStreamingAgentTask(toolCallId)
               if (controller.signal.aborted) return
               failAgentImageTask(toolCallId, error)
             }
           : undefined,
-      })
+      }
+      let result
+      try {
+        result = await callAgentResponsesApi({
+          ...requestOptions,
+          input: apiInputForTurn,
+        })
+      } catch (error) {
+        if (!isAgentContextSizeLimitError(error)) throw error
+        const reducedInput = buildReducedAgentInput(apiInputForTurn)
+        if (estimateSerializedSize(reducedInput) >= estimateSerializedSize(apiInputForTurn)) {
+          throw new Error(getAgentContextSizeLimitErrorMessage())
+        }
+        useStore.setState({
+          agentContextNotice: {
+            conversationId,
+            roundId,
+            message: '接口限制了 5MB 请求体，已移除图片上下文并自动重试。',
+            createdAt: Date.now(),
+          },
+        })
+        useStore.getState().showToast('Agent 上下文过大，已自动缩减参考图后重试', 'info')
+        result = await callAgentResponsesApi({
+          ...requestOptions,
+          input: reducedInput,
+        }).catch((retryError) => {
+          if (isAgentContextSizeLimitError(retryError)) {
+            throw new Error(getAgentContextSizeLimitErrorMessage())
+          }
+          throw retryError
+        })
+        apiInputForTurn = reducedInput
+      }
       if (controller.signal.aborted) throw createAgentAbortError()
 
       lastResponseId = result.responseId ?? lastResponseId
@@ -3957,7 +4247,9 @@ async function executeAgentRound(
       // Inject batch-generated images as input_image user message for model visibility
       const batchImagesItem = await createAgentBatchImagesInputItem(latestRound, useStore.getState().tasks, streamingTaskIds)
       if (batchImagesItem) continuationBase.splice(continuationBase.length - 1, 0, batchImagesItem)
-      apiInputForTurn = continuationBase
+      apiInputForTurn = estimateSerializedSize(continuationBase) > AGENT_CONTEXT_REQUEST_HARD_LIMIT_BYTES
+        ? buildReducedAgentInput(continuationBase)
+        : continuationBase
       accumulatedOutputItems = accumulatedOutputItemsWithFunctionOutputs
       pendingToolTextSeparator = true
     }
@@ -4023,7 +4315,9 @@ async function executeAgentRound(
       return
     }
 
-    let message = err instanceof Error ? err.message : String(err)
+    let message = isAgentContextSizeLimitError(err)
+      ? getAgentContextSizeLimitErrorMessage()
+      : err instanceof Error ? err.message : String(err)
     const usesApiProxy = activeProfile.apiProxy ?? requestSettings.apiProxy
     const networkErrorHint = getApiRequestNetworkErrorHint(err, startedAt, usesApiProxy, activeProfile)
     if (networkErrorHint && !message.includes(IMAGE_FETCH_CORS_HINT)) {

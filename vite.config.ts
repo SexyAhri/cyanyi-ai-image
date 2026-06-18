@@ -45,5 +45,37 @@ export default defineConfig(({ command }) => {
             }
           : undefined,
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('katex') || id.includes('rehype-katex') || id.includes('remark-math') || id.includes('micromark-extension-math') || id.includes('mdast-util-math')) return 'math-katex'
+              if (id.includes('@streamdown/math')) return 'markdown-math'
+              if (id.includes('streamdown')) return 'markdown-streamdown'
+              if (
+                id.includes('react-markdown') ||
+                id.includes('remark-gfm') ||
+                id.includes('remark-parse') ||
+                id.includes('remark-rehype') ||
+                id.includes('unified') ||
+                id.includes('micromark') ||
+                id.includes('mdast-util') ||
+                id.includes('hast-util') ||
+                id.includes('unist-util') ||
+                id.includes('vfile')
+              ) return 'markdown-legacy'
+              if (id.includes('fflate')) return 'compression'
+              if (id.includes('@fal-ai')) return 'fal'
+              if (id.includes('react') || id.includes('react-dom') || id.includes('zustand')) return 'vendor'
+            }
+            if (id.includes('/src/components/SettingsModal')) return 'settings'
+            if (id.includes('/src/components/FavoriteCollections')) return 'favorites'
+            if (id.includes('/src/components/MaskEditorModal')) return 'mask-editor'
+            if (id.includes('/src/components/DetailModal') || id.includes('/src/components/Lightbox')) return 'image-viewers'
+          },
+        },
+      },
+    },
   }
 })

@@ -1566,6 +1566,77 @@ describe('agent context for removed outputs', () => {
     expect(serializedInput).not.toContain('image_generation_call')
   })
 
+  it('retries Agent requests with reduced image context when the request body is too large', async () => {
+    const retryProfile = createDefaultOpenAIProfile({
+      id: 'responses-profile-retry',
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      model: DEFAULT_RESPONSES_MODEL,
+      streamImages: true,
+    })
+    const largeBase64 = 'A'.repeat(900_000)
+    await putImage({ id: 'image-big-1', dataUrl: `data:image/jpeg;base64,${largeBase64}` })
+    await putImage({ id: 'image-big-2', dataUrl: `data:image/jpeg;base64,${largeBase64}` })
+
+    useStore.setState((state) => ({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        apiKey: 'test-key',
+        apiMode: 'responses',
+        model: DEFAULT_RESPONSES_MODEL,
+        streamImages: true,
+        profiles: [retryProfile],
+        activeProfileId: retryProfile.id,
+      }),
+      prompt: '继续改这两张图',
+      inputImages: [
+        { id: 'image-big-1', dataUrl: '' },
+        { id: 'image-big-2', dataUrl: '' },
+      ],
+      maskDraft: null,
+      params: { ...DEFAULT_PARAMS },
+      appMode: 'agent',
+      tasks: [],
+      streamPreviews: {},
+      streamPreviewSlots: {},
+      agentConversations: [agentConversation({
+        id: 'conversation-retry',
+        activeRoundId: null,
+        rounds: [],
+        messages: [],
+      })],
+      activeAgentConversationId: 'conversation-retry',
+      agentEditingRoundId: null,
+      showToast: vi.fn(),
+    }))
+
+    vi.mocked(callAgentResponsesApi)
+      .mockRejectedValueOnce(new Error('Request body exceeds your tier limit (5MB for tier 0). Please upgrade your plan or split the context.'))
+      .mockResolvedValueOnce({
+        text: '已自动缩减上下文后继续',
+        images: [],
+        outputItems: [{ type: 'message', content: [{ type: 'output_text', text: '已自动缩减上下文后继续' }] }],
+        responseId: 'response-retry',
+      })
+
+    await submitAgentMessage()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(vi.mocked(callAgentResponsesApi)).toHaveBeenCalledTimes(2)
+    const firstInput = vi.mocked(callAgentResponsesApi).mock.calls[0][0].input
+    const retryInput = vi.mocked(callAgentResponsesApi).mock.calls[1][0].input
+    const firstSerialized = JSON.stringify(firstInput)
+    const retrySerialized = JSON.stringify(retryInput)
+
+    expect(firstSerialized).toContain('input_image')
+    expect(retrySerialized.length).toBeLessThan(firstSerialized.length)
+    expect(retrySerialized).not.toContain('input_image')
+    expect(useStore.getState().agentContextNotice).toMatchObject({
+      conversationId: 'conversation-retry',
+      message: expect.stringContaining('5MB'),
+    })
+  })
+
   it('scrubs stored agent response payloads when deleting an output task', async () => {
     const rawResponsePayload = JSON.stringify({
       output: [

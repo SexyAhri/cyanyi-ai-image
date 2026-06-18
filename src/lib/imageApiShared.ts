@@ -182,6 +182,16 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
       /* ignore */
     }
   }
+  const normalized = errorMsg.trim()
+  if (/<!doctype html/i.test(normalized) || /<html[\s>]/i.test(normalized)) {
+    if (response.status === 524 || response.status === 522 || response.status === 520) {
+      return `网关超时或源站连接异常（HTTP ${response.status}）。如果前面挂了 Cloudflare/CDN/反代，请优先检查反代超时和源站连通性。`
+    }
+    if (response.status >= 500) {
+      return `服务端返回了 HTML 错误页（HTTP ${response.status}），通常是反向代理、CDN 或网关错误，不是正常的 JSON API 响应。`
+    }
+    return `接口返回了 HTML 页面而不是 JSON（HTTP ${response.status}），请检查 API 地址是否填错，或请求是否被 Cloudflare/CDN/反代拦截。`
+  }
   return errorMsg
 }
 

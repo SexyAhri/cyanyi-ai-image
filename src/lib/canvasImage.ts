@@ -26,6 +26,32 @@ export async function imageDataUrlToPngBlob(dataUrl: string): Promise<Blob> {
   return canvasToBlob(canvas, 'image/png')
 }
 
+export async function resizeImageDataUrl(
+  dataUrl: string,
+  opts: {
+    maxWidth: number
+    maxHeight?: number
+    mimeType?: 'image/jpeg' | 'image/webp' | 'image/png'
+    quality?: number
+  },
+): Promise<string> {
+  const image = await loadImage(dataUrl)
+  const maxWidth = Math.max(1, Math.trunc(opts.maxWidth))
+  const maxHeight = Math.max(1, Math.trunc(opts.maxHeight ?? opts.maxWidth))
+  const scale = Math.min(1, maxWidth / image.naturalWidth, maxHeight / image.naturalHeight)
+  const width = Math.max(1, Math.round(image.naturalWidth * scale))
+  const height = Math.max(1, Math.round(image.naturalHeight * scale))
+
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('当前浏览器不支持 Canvas')
+  ctx.drawImage(image, 0, 0, width, height)
+
+  return canvas.toDataURL(opts.mimeType ?? 'image/jpeg', opts.quality ?? 0.82)
+}
+
 export async function maskDataUrlToPngBlob(maskDataUrl: string): Promise<Blob> {
   const blob = await dataUrlToBlob(maskDataUrl, 'image/png')
   if (blob.type !== 'image/png') {

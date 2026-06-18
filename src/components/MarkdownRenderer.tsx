@@ -20,7 +20,7 @@ type MathMarkdownModule = {
 }
 type MarkdownRendererState =
   | { type: 'loading' }
-  | { type: 'modern'; Component: StreamdownComponent; math: MathMarkdownModule }
+  | { type: 'modern'; Component: StreamdownComponent; math?: MathMarkdownModule }
   | { type: 'legacy'; module: LegacyMarkdownModule }
   | { type: 'plain' }
 
@@ -100,8 +100,14 @@ const canLoadStreamdown = (() => {
   }
 })()
 
-let streamdownPromise: Promise<MarkdownRendererState> | null = null
+let streamdownPromise: Promise<StreamdownComponent | null> | null = null
+let mathMarkdownPromise: Promise<MathMarkdownModule | null> | null = null
 let legacyMarkdownPromise: Promise<MarkdownRendererState> | null = null
+
+function hasMathMarkdown(content: string) {
+  return /\\\(|\\\[|\\begin\{[a-z*]+\}/i.test(content) ||
+    /(^|[^\\])\${1,2}(?!\s)[\s\S]*?\S\${1,2}/.test(content)
+}
 
 function loadLegacyMarkdown() {
   legacyMarkdownPromise ??= Promise.all([import('react-markdown'), import('remark-gfm')])
@@ -120,29 +126,41 @@ function loadLegacyMarkdown() {
   return legacyMarkdownPromise
 }
 
-function loadMarkdownRenderer() {
-  if (!canLoadStreamdown) return loadLegacyMarkdown()
-
-  streamdownPromise ??= Promise.all([
-    import('streamdown'),
-    import('@streamdown/math'),
-  ])
-    .then(([streamdown, math]) => ({
-      type: 'modern' as const,
-      Component: streamdown.Streamdown,
-      math: {
-        math: math.createMathPlugin({
-          errorColor: 'var(--muted-foreground)',
-          singleDollarTextMath: true,
-        }),
-      },
-    }))
+function loadStreamdownComponent() {
+  streamdownPromise ??= import('streamdown')
+    .then((streamdown) => streamdown.Streamdown)
     .catch((error) => {
       console.error('Streamdown failed to load:', error)
-      return loadLegacyMarkdown()
+      return null
     })
 
-  return streamdownPromise!
+  return streamdownPromise
+}
+
+function loadMathMarkdown() {
+  mathMarkdownPromise ??= import('@streamdown/math')
+    .then((math) => ({
+      math: math.createMathPlugin({
+        errorColor: 'var(--muted-foreground)',
+        singleDollarTextMath: true,
+      }),
+    }))
+    .catch((error) => {
+      console.error('Markdown math renderer failed to load:', error)
+      return null
+    })
+
+  return mathMarkdownPromise
+}
+
+async function loadMarkdownRenderer(enableMath: boolean): Promise<MarkdownRendererState> {
+  if (!canLoadStreamdown) return loadLegacyMarkdown()
+
+  const Component = await loadStreamdownComponent()
+  if (!Component) return loadLegacyMarkdown()
+
+  const math = enableMath ? await loadMathMarkdown() : null
+  return math ? { type: 'modern', Component, math } : { type: 'modern', Component }
 }
 
 function PlainTextMarkdown({ content, className = '' }: MarkdownRendererProps) {
@@ -163,18 +181,19 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
   className = '',
 }: MarkdownRendererProps) {
   const [renderer, setRenderer] = useState<MarkdownRendererState>({ type: 'loading' })
+  const enableMath = hasMathMarkdown(content)
 
   useEffect(() => {
     let disposed = false
 
-    loadMarkdownRenderer().then((nextRenderer) => {
+    loadMarkdownRenderer(enableMath).then((nextRenderer) => {
       if (!disposed) setRenderer(nextRenderer)
     })
 
     return () => {
       disposed = true
     }
-  }, [])
+  }, [enableMath])
 
   if (renderer.type === 'legacy') {
     const { ReactMarkdown, remarkGfm } = renderer.module
@@ -211,7 +230,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
       lineNumbers={false}
       mode={streaming ? 'streaming' : 'static'}
       parseIncompleteMarkdown={streaming}
-      plugins={{ math: renderer.math.math }}
+      plugins={renderer.math ? { math: renderer.math.math } : {}}
       skipHtml
       translations={translations}
       urlTransform={safeUrl}

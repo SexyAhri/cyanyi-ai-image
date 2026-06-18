@@ -321,6 +321,7 @@ export default function AgentWorkspace() {
   const setActiveConversationId = useStore((s) => s.setActiveAgentConversationId)
   const renameConversation = useStore((s) => s.renameAgentConversation)
   const deleteConversation = useStore((s) => s.deleteAgentConversation)
+  const clearConversation = useStore((s) => s.clearAgentConversation)
   const sidebarCollapsed = useStore((s) => s.agentSidebarCollapsed)
   const setSidebarCollapsed = useStore((s) => s.setAgentSidebarCollapsed)
   const agentMobileHeaderVisible = useStore((s) => s.agentMobileHeaderVisible)
@@ -343,7 +344,9 @@ export default function AgentWorkspace() {
   const showToast = useStore((s) => s.showToast)
   const openFavoritePicker = useStore((s) => s.openFavoritePicker)
   const agentGeneratingTitleIds = useStore((s) => s.agentGeneratingTitleIds)
+  const agentContextNotice = useStore((s) => s.agentContextNotice)
   const conversation = conversations.find((item) => item.id === activeConversationId) ?? null
+  const visibleContextNotice = agentContextNotice?.conversationId === activeConversationId ? agentContextNotice : null
   const [editingConversationTitle, setEditingConversationTitle] = useState('')
 
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -973,9 +976,27 @@ export default function AgentWorkspace() {
             >
               {conversation?.title || 'Agent'}
             </button>
-            <button type="button" onClick={createConversation} className="p-2 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.04] rounded-lg transition-colors" title="新对话">
-              <EditIcon className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-1">
+              {conversation && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirmDialog({
+                      title: '清空对话',
+                      message: '确定要清空当前 Agent 对话吗？会保留当前会话标题，但会删除其中全部消息和轮次。',
+                      action: () => clearConversation(conversation.id),
+                    })
+                  }}
+                  className="p-2 text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
+                  title="清空当前对话"
+                >
+                  <TrashIcon className="w-5 h-5" />
+                </button>
+              )}
+              <button type="button" onClick={createConversation} className="p-2 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.04] rounded-lg transition-colors" title="新对话">
+                <EditIcon className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -986,6 +1007,12 @@ export default function AgentWorkspace() {
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
         >
+          {visibleContextNotice && (
+            <div className="mx-auto mb-3 flex max-w-3xl items-start gap-2 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-800 shadow-sm dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+              <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+              <span>{visibleContextNotice.message}</span>
+            </div>
+          )}
           {!conversation ? (
             <div className="py-20 text-center text-gray-400">
               <p className="mb-3">还没有 Agent 对话</p>
