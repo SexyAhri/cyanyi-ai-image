@@ -123,7 +123,7 @@ import { clearAgentConversations, clearImages, clearTasks, getAllAgentConversati
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
-import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, sanitizeProviderErrorMessage, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -135,6 +135,28 @@ describe('error toast messages', () => {
 
   it('uses a generic message for long raw errors without a title', () => {
     expect(getErrorToastMessage(`invalid request ${'x'.repeat(90)}`)).toBe('操作失败，请查看详情')
+  })
+})
+
+describe('provider error sanitizing', () => {
+  it('hides model, group, and request id from channel errors', () => {
+    const message = sanitizeProviderErrorMessage(
+      'No available channel for model gpt-image-1.5 under group gpt-绘图 (distributor) (request id: 202606181013249028361862q61vxqwpLnRqM9A)',
+    )
+
+    expect(message).toBe('当前接口暂时没有可用渠道，请更换 API 配置或稍后重试。')
+    expect(message).not.toContain('gpt-image-1.5')
+    expect(message).not.toContain('request id')
+  })
+
+  it('hides balance and charge details from billing errors', () => {
+    const message = sanitizeProviderErrorMessage(
+      'Request error occurred: 预扣费额度失败, 用户剩余额度: $0.165064, 需要预扣费额度: $0.250000 (request id: 202606180514207889501072q61vxgwWfim6LnDP)',
+    )
+
+    expect(message).toBe('当前接口暂时无法完成请求，请更换 API 配置或稍后重试。')
+    expect(message).not.toContain('余额')
+    expect(message).not.toContain('$0.165064')
   })
 })
 
@@ -285,6 +307,48 @@ describe('mask draft lifecycle in store actions', () => {
     const state = useStore.getState()
     expect(state.tasks).toHaveLength(1)
     expect(state.showToast).toHaveBeenCalledWith('任务已提交', 'success')
+  })
+
+  it('auto retries transient network failures without opening the detail modal', async () => {
+    vi.useFakeTimers()
+    const { callImageApi } = await import('./lib/api')
+    vi.mocked(callImageApi).mockClear()
+    vi.mocked(callImageApi)
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce({
+        images: ['data:image/png;base64,retried'],
+        actualParams: {},
+        actualParamsList: [{}],
+        revisedPrompts: [],
+      })
+
+    try {
+      await submitTask()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      const retrying = useStore.getState().tasks[0]
+      expect(retrying).toMatchObject({
+        status: 'running',
+        error: null,
+        queued: true,
+        autoRetryCount: 1,
+        autoRetryReason: '网络连接中断',
+      })
+      expect(useStore.getState().detailTaskId).toBeNull()
+
+      await vi.advanceTimersByTimeAsync(3_000)
+      await Promise.resolve()
+
+      const completed = useStore.getState().tasks[0]
+      expect(callImageApi).toHaveBeenCalledTimes(2)
+      expect(completed.status).toBe('done')
+      expect(completed.error).toBeNull()
+      expect(completed.autoRetryNextAt).toBeUndefined()
+      expect(useStore.getState().detailTaskId).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('stores transparent background output after local post-processing', async () => {
@@ -1767,6 +1831,16 @@ describe('agent context for removed outputs', () => {
     expect(taskMatchesFilterStatus(partial, 'error')).toBe(true)
     expect(taskMatchesFilterStatus(partial, 'done')).toBe(true)
     expect(taskMatchesSearchQuery(partial, 'failed to fetch')).toBe(true)
+  })
+
+  it('matches task notes and tags when searching tasks', () => {
+    const annotated = task({
+      note: 'A 客户首版封面',
+      tags: ['头像', '商用'],
+    })
+
+    expect(taskMatchesSearchQuery(annotated, '首版')).toBe(true)
+    expect(taskMatchesSearchQuery(annotated, '商用')).toBe(true)
   })
 
   it('clears partial failure markers without deleting successful outputs', async () => {

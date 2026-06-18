@@ -10,6 +10,7 @@ export default function Header() {
   const appMode = useStore((s) => s.appMode)
   const activeAgentConversationId = useStore((s) => s.activeAgentConversationId)
   const setShowSettings = useStore((s) => s.setShowSettings)
+  const setUtilityPanelOpen = useStore((s) => s.setUtilityPanelOpen)
   const clearAgentConversation = useStore((s) => s.clearAgentConversation)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const filterFavorite = useStore((s) => s.filterFavorite)
@@ -17,6 +18,7 @@ export default function Header() {
   const [showHelp, setShowHelp] = useState(false)
   const clearTooltip = useTooltip()
   const helpTooltip = useTooltip()
+  const utilityTooltip = useTooltip()
   const settingsTooltip = useTooltip()
 
   return (
@@ -51,6 +53,29 @@ export default function Header() {
                 </ViewportTooltip>
               </div>
             )}
+
+            <div className="relative" {...utilityTooltip.handlers}>
+              <button
+                type="button"
+                onClick={() => {
+                  dismissAllTooltips()
+                  setUtilityPanelOpen(true)
+                }}
+                className="cy-icon-button"
+                aria-label="Tools"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                  <path d="M4 7h16" />
+                  <path d="M7 12h10" />
+                  <path d="M10 17h4" />
+                  <path d="M6 7a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" />
+                  <path d="M18 21a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" />
+                </svg>
+              </button>
+              <ViewportTooltip visible={utilityTooltip.visible} className="whitespace-nowrap">
+                Tools
+              </ViewportTooltip>
+            </div>
 
             <div className="relative" {...helpTooltip.handlers}>
               <button

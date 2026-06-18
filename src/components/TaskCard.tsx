@@ -297,6 +297,10 @@ export default function TaskCard({
   const isFalReconnecting = task.status === 'error' && task.falRecoverable
   const isCustomReconnecting = task.status === 'error' && task.customRecoverable
   const showRunningTimer = task.status === 'running' || isFalReconnecting || isCustomReconnecting
+  const isAutoRetrying = task.status === 'running' && Boolean(task.autoRetryNextAt)
+  const autoRetrySeconds = task.autoRetryNextAt
+    ? Math.max(0, Math.ceil((task.autoRetryNextAt - now) / 1000))
+    : 0
   const swipeBgClass = showSwipeAction
     ? swipeStartedSelected
       ? 'bg-gray-500 dark:bg-gray-600'
@@ -321,6 +325,8 @@ export default function TaskCard({
   const outputSuccessCount = task.outputImages?.length ?? 0
   const requestedOutputCount = Math.max(task.params.n, outputSuccessCount + outputErrorCount)
   const hasPartialOutputFailure = task.status === 'done' && outputErrorCount > 0
+  const tags = task.tags ?? []
+  const note = task.note?.trim() ?? ''
 
   const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
@@ -417,7 +423,33 @@ export default function TaskCard({
               )}
             </>
           )}
-          {task.status === 'running' && (!streamPreviewSrc || !streamPreviewLoaded) && (
+          {task.status === 'running' && task.queued && (
+            <div className="relative flex flex-col items-center gap-2 px-3 text-center">
+              {isAutoRetrying && (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-gray-100 px-3 text-center dark:bg-black/20">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-500/10 dark:text-blue-300">
+                    <svg className="h-5 w-5 animate-spin" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                      <path d="M4 4v5h5" />
+                      <path d="M20 20v-5h-5" />
+                      <path d="M5.5 9A7 7 0 0 1 17 5.6L20 9" />
+                      <path d="M18.5 15A7 7 0 0 1 7 18.4L4 15" />
+                    </svg>
+                  </span>
+                  <span className="text-xs text-blue-600 dark:text-blue-300">
+                    自动重试中 · {autoRetrySeconds} 秒
+                  </span>
+                </div>
+              )}
+              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-500/10 dark:text-amber-300">
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                  <path d="M12 8v4l3 3" />
+                  <circle cx="12" cy="12" r="9" />
+                </svg>
+              </span>
+              <span className="text-xs text-amber-600 dark:text-amber-300">排队中</span>
+            </div>
+          )}
+          {task.status === 'running' && !task.queued && (!streamPreviewSrc || !streamPreviewLoaded) && (
             <div className="flex flex-col items-center gap-2">
               <svg
                 className="w-8 h-8 text-blue-400 animate-spin"
@@ -550,6 +582,31 @@ export default function TaskCard({
             )}
           </div>
           <div className="mt-auto flex flex-col gap-1.5">
+            {(tags.length > 0 || note) && (
+              <div className="flex min-w-0 flex-col gap-1">
+                {tags.length > 0 && (
+                  <div
+                    data-tag-scroll-area
+                    className="flex min-w-0 gap-1 overflow-x-auto hide-scrollbar mask-edge-r pr-2"
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onTouchMove={(e) => e.stopPropagation()}
+                    onTouchEnd={(e) => e.stopPropagation()}
+                    onTouchCancel={(e) => e.stopPropagation()}
+                  >
+                    {tags.slice(0, 5).map((tag) => (
+                      <span key={tag} className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-300">
+                        #{tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {note && (
+                  <p className="truncate rounded-lg bg-amber-50/80 px-2 py-1 text-[11px] leading-4 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200" title={note}>
+                    {note}
+                  </p>
+                )}
+              </div>
+            )}
             {/* 参数与信息：横向滚动 */}
             <div 
               data-tag-scroll-area

@@ -109,8 +109,12 @@ export interface AppSettings {
   agentMaxToolRounds: number
   agentWebSearch: boolean
   agentMathFormattingPrompt: boolean
+  queuePaused: boolean
+  queueMaxConcurrency: number
   profiles: ApiProfile[]
   activeProfileId: string
+  galleryProfileId?: string | null
+  agentProfileId?: string | null
 }
 
 // ===== 任务参数 =====
@@ -126,9 +130,9 @@ export interface TaskParams {
 }
 
 export const DEFAULT_PARAMS: TaskParams = {
-  size: 'auto',
-  quality: 'auto',
-  output_format: 'png',
+  size: '1280x720',
+  quality: 'high',
+  output_format: 'jpeg',
   output_compression: null,
   moderation: 'auto',
   n: 1,
@@ -214,6 +218,10 @@ export interface TaskRecord {
   isFavorite?: boolean
   /** 所属收藏夹 ID 列表 */
   favoriteCollectionIds?: string[]
+  /** 用户备注，用于记录用途、客户、风格等检索信息 */
+  note?: string
+  /** 用户标签，用于快速筛选生成记录 */
+  tags?: string[]
   /** 来源模式：画廊 / Agent */
   sourceMode?: AppMode
   /** Agent 对话 ID */
@@ -228,6 +236,11 @@ export interface TaskRecord {
   agentBatchCallId?: string
   /** Agent 图像工具实际动作 */
   agentToolAction?: 'generate' | 'edit' | 'auto' | string
+  parentTaskId?: string
+  queued?: boolean
+  autoRetryCount?: number
+  autoRetryNextAt?: number
+  autoRetryReason?: string
 }
 
 export interface FavoriteCollection {
@@ -235,6 +248,27 @@ export interface FavoriteCollection {
   name: string
   createdAt: number
   updatedAt: number
+}
+
+export interface PromptTemplate {
+  id: string
+  title: string
+  content: string
+  category?: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface AgentDiagnosticLog {
+  id: string
+  conversationId?: string
+  roundId?: string
+  level: 'info' | 'warning' | 'error'
+  scope?: string
+  message: string
+  inputSize?: number
+  detail?: unknown
+  createdAt: number
 }
 
 // ===== Agent 模式 =====
@@ -420,6 +454,7 @@ export interface ExportData {
   tasks?: TaskRecord[]
   favoriteCollections?: FavoriteCollection[]
   defaultFavoriteCollectionId?: string | null
+  promptTemplates?: PromptTemplate[]
   agentConversations?: AgentConversation[]
   /** imageId → 图片信息 */
   imageFiles?: Record<string, {

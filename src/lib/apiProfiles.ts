@@ -79,6 +79,12 @@ export function normalizeAgentMaxToolRounds(value: unknown, fallback: number | u
   return Math.min(50, Math.max(1, Math.trunc(numeric)))
 }
 
+export function normalizeQueueMaxConcurrency(value: unknown, fallback = 2): number {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  return Math.min(6, Math.max(1, Math.trunc(numeric)))
+}
+
 export function isDefaultConfigOnlyEnabled(): boolean {
   return SHOW_DEFAULT_CONFIG_ONLY && (Boolean(RAW_DEFAULT_API_URL) || DEFAULT_OPENAI_API_PROXY)
 }
@@ -509,6 +515,12 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     ? record.activeProfileId
     : profiles[0].id
   const active = profiles.find((p) => p.id === activeProfileId) ?? profiles[0]
+  const galleryProfileId = typeof record.galleryProfileId === 'string' && profiles.some((p) => p.id === record.galleryProfileId)
+    ? record.galleryProfileId
+    : null
+  const agentProfileId = typeof record.agentProfileId === 'string' && profiles.some((p) => p.id === record.agentProfileId)
+    ? record.agentProfileId
+    : null
 
   return {
     baseUrl: active.baseUrl,
@@ -535,8 +547,12 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     agentMaxToolRounds: normalizeAgentMaxToolRounds(record.agentMaxToolRounds),
     agentWebSearch: typeof record.agentWebSearch === 'boolean' ? record.agentWebSearch : false,
     agentMathFormattingPrompt: typeof record.agentMathFormattingPrompt === 'boolean' ? record.agentMathFormattingPrompt : true,
+    queuePaused: typeof record.queuePaused === 'boolean' ? record.queuePaused : false,
+    queueMaxConcurrency: normalizeQueueMaxConcurrency(record.queueMaxConcurrency),
     profiles,
     activeProfileId,
+    galleryProfileId,
+    agentProfileId,
   }
 }
 
@@ -635,6 +651,26 @@ export function getActiveApiProfile(settings: Partial<AppSettings> | unknown): A
     streamImages: profile.provider === 'openai' && typeof record.streamImages === 'boolean' ? record.streamImages : profile.streamImages,
     streamPartialImages: normalizeStreamPartialImages(record.streamPartialImages, profile.streamPartialImages),
   }
+}
+
+export function getGalleryApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile {
+  const normalized = normalizeSettings(settings)
+  const routed = normalized.galleryProfileId
+    ? normalized.profiles.find((profile) => profile.id === normalized.galleryProfileId)
+    : null
+  if (routed) return routed
+  return getActiveApiProfile(settings)
+}
+
+export function getAgentApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile {
+  const normalized = normalizeSettings(settings)
+  const routed = normalized.agentProfileId
+    ? normalized.profiles.find((profile) => profile.id === normalized.agentProfileId)
+    : null
+  if (routed) return routed
+  const active = getActiveApiProfile(settings)
+  if (active.provider === 'openai' && active.apiMode === 'responses') return active
+  return normalized.profiles.find((profile) => profile.provider === 'openai' && profile.apiMode === 'responses') ?? active
 }
 
 export function validateApiProfile(profile: ApiProfile): string | null {
@@ -828,4 +864,6 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   agentMaxToolRounds: DEFAULT_AGENT_MAX_TOOL_ROUNDS,
   agentWebSearch: false,
   agentMathFormattingPrompt: true,
+  queuePaused: false,
+  queueMaxConcurrency: 2,
 })

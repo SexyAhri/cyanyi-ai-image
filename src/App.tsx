@@ -21,6 +21,7 @@ const SettingsModal = lazy(() => import('./components/SettingsModal'))
 const MaskEditorModal = lazy(() => import('./components/MaskEditorModal'))
 const ImageContextMenu = lazy(() => import('./components/ImageContextMenu'))
 const SupportPromptModal = lazy(() => import('./components/SupportPromptModal'))
+const UtilityPanel = lazy(() => import('./components/UtilityPanel'))
 const FavoriteCollectionsView = lazy(() => import('./components/FavoriteCollections').then((module) => ({ default: module.FavoriteCollectionsView })))
 const FavoriteCollectionPickerModal = lazy(() => import('./components/FavoriteCollections').then((module) => ({ default: module.FavoriteCollectionPickerModal })))
 const ManageCollectionsModal = lazy(() => import('./components/FavoriteCollections').then((module) => ({ default: module.ManageCollectionsModal })))
@@ -51,6 +52,7 @@ export default function App() {
   const lightboxImageId = useStore((s) => s.lightboxImageId)
   const showSettings = useStore((s) => s.showSettings)
   const supportPromptOpen = useStore((s) => s.supportPromptOpen)
+  const utilityPanelOpen = useStore((s) => s.utilityPanelOpen)
   const favoritePickerTaskIds = useStore((s) => s.favoritePickerTaskIds)
   const isManageCollectionsModalOpen = useStore((s) => s.isManageCollectionsModalOpen)
   const maskEditorImageId = useStore((s) => s.maskEditorImageId)
@@ -240,6 +242,7 @@ export default function App() {
         {detailTaskId && <DetailModal />}
         {lightboxImageId && <Lightbox />}
         {showSettings && <SettingsModal />}
+        {utilityPanelOpen && <UtilityPanel />}
         {supportPromptOpen && <SupportPromptModal />}
         {favoritePickerTaskIds && <FavoriteCollectionPickerModal />}
         {isManageCollectionsModalOpen && <ManageCollectionsModal />}

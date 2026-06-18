@@ -47,7 +47,7 @@ describe('callAgentResponsesApi', () => {
     expect(result).toMatchObject({
       responseId: 'resp_1',
       text: 'Hello',
-      images: [{ toolCallId: 'ig_1', dataUrl: 'data:image/png;base64,ZmluYWw=' }],
+      images: [{ toolCallId: 'ig_1', dataUrl: 'data:image/jpeg;base64,ZmluYWw=' }],
     })
   })
 
@@ -147,7 +147,7 @@ describe('callAgentResponsesApi', () => {
 
     expect(result.images).toEqual([{
       toolCallId: 'ig_base64',
-      dataUrl: 'data:image/png;base64,ZmlsZQ==',
+      dataUrl: 'data:image/jpeg;base64,ZmlsZQ==',
       actualParams: {},
     }])
   })

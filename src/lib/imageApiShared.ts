@@ -48,6 +48,14 @@ export function normalizeBase64Image(value: string, fallbackMime: string): strin
   return value.startsWith('data:') ? value : `data:${fallbackMime};base64,${value}`
 }
 
+export function getMimeForActualParams(
+  source: Pick<Partial<TaskParams>, 'output_format'> | undefined,
+  fallbackMime: string,
+): string {
+  const format = source?.output_format
+  return format ? MIME_MAP[format] ?? fallbackMime : fallbackMime
+}
+
 function formatMiB(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`
 }

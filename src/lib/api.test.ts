@@ -166,7 +166,7 @@ describe('callImageApi', () => {
       stream: true,
       partial_images: 3,
     })
-    expect(partialImages).toEqual(['data:image/png;base64,cGFydGlhbA=='])
+    expect(partialImages).toEqual(['data:image/jpeg;base64,cGFydGlhbA=='])
     expect(result).toMatchObject({
       images: ['data:image/png;base64,ZmluYWw='],
       actualParams: {
@@ -260,7 +260,7 @@ describe('callImageApi', () => {
     } as any)
 
     expect(result).toMatchObject({
-      images: ['data:image/png;base64,ZmluYWw='],
+      images: ['data:image/jpeg;base64,ZmluYWw='],
       actualParams: {
         output_format: 'jpeg',
         quality: 'medium',
@@ -355,8 +355,8 @@ describe('callImageApi', () => {
     ])
     expect(partials.map((partial) => partial.requestIndex).sort()).toEqual([0, 1])
     expect(partials.map((partial) => partial.image)).toEqual([
-      'data:image/png;base64,cGFydGlhbA==',
-      'data:image/png;base64,cGFydGlhbA==',
+      'data:image/jpeg;base64,cGFydGlhbA==',
+      'data:image/jpeg;base64,cGFydGlhbA==',
     ])
   })
 
@@ -385,8 +385,8 @@ describe('callImageApi', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(result.images).toEqual([
-      'data:image/png;base64,aW1hZ2Ut1',
-      'data:image/png;base64,aW1hZ2Ut3',
+      'data:image/jpeg;base64,aW1hZ2Ut1',
+      'data:image/jpeg;base64,aW1hZ2Ut3',
     ])
     expect(result.failedRequests).toEqual([{ requestIndex: 1, error: 'Failed to fetch' }])
     expect(result.actualParams).toMatchObject({ n: 2 })
@@ -432,9 +432,9 @@ describe('callImageApi', () => {
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.stream).toBe(true)
     expect(body.tools[0].partial_images).toBe(1)
-    expect(partialImages).toEqual(['data:image/png;base64,cGFydGlhbA=='])
+    expect(partialImages).toEqual(['data:image/jpeg;base64,cGFydGlhbA=='])
     expect(result).toMatchObject({
-      images: ['data:image/png;base64,ZmluYWw='],
+      images: ['data:image/jpeg;base64,ZmluYWw='],
       actualParams: { size: '1024x1024' },
       actualParamsList: [{ size: '1024x1024' }],
       revisedPrompts: ['rewritten'],
@@ -462,8 +462,8 @@ describe('callImageApi', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(result.images).toEqual([
-      'data:image/png;base64,aW1hZ2Ut1',
-      'data:image/png;base64,aW1hZ2Ut2',
+      'data:image/jpeg;base64,aW1hZ2Ut1',
+      'data:image/jpeg;base64,aW1hZ2Ut2',
     ])
     expect(result.failedRequests).toEqual([{ requestIndex: 2, error: 'Failed to fetch' }])
     expect(result.actualParams).toMatchObject({ n: 2 })
@@ -489,7 +489,7 @@ describe('callImageApi', () => {
     })
 
     expect(result).toMatchObject({
-      images: ['data:image/png;base64,ZmluYWw='],
+      images: ['data:image/jpeg;base64,ZmluYWw='],
       actualParams: { size: '1024x1024' },
       actualParamsList: [{ size: '1024x1024' }],
     })
@@ -528,7 +528,7 @@ describe('callImageApi', () => {
     } as any)
 
     expect(result).toMatchObject({
-      images: ['data:image/png;base64,ZmluYWw='],
+      images: ['data:image/jpeg;base64,ZmluYWw='],
       actualParams: { size: '1024x1024' },
       actualParamsList: [{ size: '1024x1024' }],
     })
@@ -841,7 +841,7 @@ describe('callImageApi', () => {
     await vi.advanceTimersByTimeAsync(1000)
 
     await expect(promise).resolves.toEqual({
-      images: ['data:image/png;base64,aW1hZ2U='],
+      images: ['data:image/jpeg;base64,aW1hZ2U='],
     })
     expect(fetchMock).toHaveBeenCalledTimes(3)
   })
@@ -917,7 +917,7 @@ describe('callImageApi', () => {
     await vi.advanceTimersByTimeAsync(6000)
 
     await expect(promise).resolves.toEqual({
-      images: ['data:image/png;base64,aW1hZ2U='],
+      images: ['data:image/jpeg;base64,aW1hZ2U='],
     })
   })
 })

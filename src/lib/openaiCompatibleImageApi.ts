@@ -16,6 +16,7 @@ import {
   isHttpUrl,
   mergeActualParams,
   MIME_MAP,
+  getMimeForActualParams,
   normalizeBase64Image,
   pickActualParams,
 } from './imageApiShared'
@@ -257,9 +258,10 @@ function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime:
 
     const b64 = getResponsesImageResultBase64(item.result)
     if (b64) {
+      const actualParams = mergeActualParams(pickActualParams(item))
       results.push({
-        image: normalizeBase64Image(b64, fallbackMime),
-        actualParams: mergeActualParams(pickActualParams(item)),
+        image: normalizeBase64Image(b64, getMimeForActualParams(actualParams, fallbackMime)),
+        actualParams,
         revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
       })
     }
@@ -306,14 +308,16 @@ async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, s
   try {
     for (const item of data) {
       const b64 = item.b64_json
+      const itemActualParams = mergeActualParams(pickActualParams(payload), pickActualParams(item))
+      const itemMime = getMimeForActualParams(itemActualParams, mime)
       if (b64) {
-        images.push(normalizeBase64Image(b64, mime))
+        images.push(normalizeBase64Image(b64, itemMime))
         revisedPrompts.push(typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined)
         continue
       }
 
       if (isHttpUrl(item.url) || isDataUrl(item.url)) {
-        images.push(await fetchImageUrlAsDataUrl(item.url, mime, signal))
+        images.push(await fetchImageUrlAsDataUrl(item.url, itemMime, signal))
         revisedPrompts.push(typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined)
       }
     }
@@ -369,7 +373,7 @@ async function parseImagesApiStreamResponse(
       const b64 = getStringValue(event, 'b64_json')
       if (b64) {
         onPartialImage?.({
-          image: normalizeBase64Image(b64, mime),
+          image: normalizeBase64Image(b64, getMimeForActualParams(pickActualParams(event), mime)),
           partialImageIndex: getNumberValue(event, 'partial_image_index'),
         })
       }
@@ -395,9 +399,8 @@ async function parseImagesApiStreamResponse(
   }
 
   const images = completedItems
-    .map((item) => item.b64_json)
-    .filter((b64): b64 is string => Boolean(b64))
-    .map((b64) => normalizeBase64Image(b64, mime))
+    .map((item) => item.b64_json ? normalizeBase64Image(item.b64_json, getMimeForActualParams(pickActualParams(item), mime)) : '')
+    .filter(Boolean)
   if (!images.length) throw new Error('流式接口未返回可用图片数据')
 
   const actualParamsList = completedItems.map((item) => mergeActualParams(pickActualParams(item)))

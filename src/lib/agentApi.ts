@@ -1,6 +1,6 @@
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
-import { appendStreamingFormatHint, maybeAppendStreamingHint, getApiErrorMessage, MIME_MAP, normalizeBase64Image, pickActualParams } from './imageApiShared'
+import { appendStreamingFormatHint, maybeAppendStreamingHint, getApiErrorMessage, getMimeForActualParams, MIME_MAP, normalizeBase64Image, pickActualParams } from './imageApiShared'
 
 export interface AgentApiResultImage {
   toolCallId?: string
@@ -422,11 +422,12 @@ function extractImages(payload: ResponsesApiResponse, fallbackMime: string): Age
 
     const result = item.result
     if (typeof result === 'string' && result.trim()) {
+      const actualParams = pickActualParams(item)
       images.push({
         toolCallId: typeof item.id === 'string' ? item.id : undefined,
         action: typeof item.action === 'string' ? item.action : undefined,
-        dataUrl: normalizeBase64Image(result, fallbackMime),
-        actualParams: pickActualParams(item),
+        dataUrl: normalizeBase64Image(result, getMimeForActualParams(actualParams, fallbackMime)),
+        actualParams,
         revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
       })
       continue
@@ -443,11 +444,12 @@ function extractImages(payload: ResponsesApiResponse, fallbackMime: string): Age
         ? result.data
         : ''
       if (b64.trim()) {
+        const actualParams = pickActualParams(item)
         images.push({
           toolCallId: typeof item.id === 'string' ? item.id : undefined,
           action: typeof item.action === 'string' ? item.action : undefined,
-          dataUrl: normalizeBase64Image(b64, fallbackMime),
-          actualParams: pickActualParams(item),
+          dataUrl: normalizeBase64Image(b64, getMimeForActualParams(actualParams, fallbackMime)),
+          actualParams,
           revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
         })
       }
@@ -476,11 +478,12 @@ function extractImageFromOutputItem(item: ResponsesOutputItem, fallbackMime: str
     : ''
 
   if (!b64.trim()) return null
+  const actualParams = pickActualParams(item)
   return {
     toolCallId: typeof item.id === 'string' ? item.id : undefined,
     action: typeof item.action === 'string' ? item.action : undefined,
-    dataUrl: normalizeBase64Image(b64, fallbackMime),
-    actualParams: pickActualParams(item),
+    dataUrl: normalizeBase64Image(b64, getMimeForActualParams(actualParams, fallbackMime)),
+    actualParams,
     revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
   }
 }

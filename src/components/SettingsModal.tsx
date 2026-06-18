@@ -34,7 +34,7 @@ import { DEFAULT_DROPDOWN_MAX_HEIGHT, getDropdownMaxHeight } from '../lib/dropdo
 import Select from './Select'
 import { Checkbox } from './Checkbox'
 import ViewportTooltip from './ViewportTooltip'
-import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, GithubIcon, ExportIcon, ImportIcon, DragHandleIcon, LinkIcon } from './icons'
+import { ChevronDownIcon, CloseIcon, CopyIcon, TrashIcon, GithubIcon, ExportIcon, ImportIcon, DragHandleIcon, LinkIcon } from './icons'
 
 function newId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
@@ -366,6 +366,12 @@ export default function SettingsModal() {
   const activeCustomProviderAsync = isAsyncCustomProvider(activeCustomProvider)
   const apiProxyChecked = activeProfileApiProxyEligible && (apiProxyLocked || activeProfile.apiProxy)
   const apiProxyEnabled = apiProxyAvailable && activeProfileApiProxyEligible && apiProxyChecked
+  const galleryRoutedProfile = draft.galleryProfileId
+    ? draft.profiles.find((profile) => profile.id === draft.galleryProfileId)
+    : null
+  const agentRoutedProfile = draft.agentProfileId
+    ? draft.profiles.find((profile) => profile.id === draft.agentProfileId)
+    : null
   const defaultProviderOrder = ['openai', 'fal', ...draft.customProviders.map(p => p.id)]
   const providerOrder = draft.providerOrder || defaultProviderOrder
 
@@ -401,6 +407,81 @@ export default function SettingsModal() {
   const getDefaultModelForMode = (apiMode: AppSettings['apiMode']) =>
     apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL
 
+  const getProfileUsageLabel = (profile: ApiProfile) => {
+    if (profile.provider === 'openai' && profile.apiMode === 'responses') return 'Agent / Responses API'
+    if (profile.apiMode === 'images') return '图片生成 / Images API'
+    return profile.apiMode
+  }
+
+  const ensureOpenAIUsageRouteProfiles = (settingsToSplit: AppSettings): AppSettings | null => {
+    if (defaultConfigOnly) return null
+
+    const source = settingsToSplit.profiles.find((profile) => profile.provider === 'openai') ?? settingsToSplit.profiles[0]
+    if (!source || source.provider !== 'openai') return null
+
+    const existingImageProfile = settingsToSplit.profiles.find((profile) => profile.provider === 'openai' && profile.apiMode === 'images')
+    const existingAgentProfile = settingsToSplit.profiles.find((profile) => profile.provider === 'openai' && profile.apiMode === 'responses')
+    const isGenericProfileName = (name: string) => name.trim() === '默认' || name.trim() === '新配置'
+    const needsImageProfile = !existingImageProfile
+    const needsAgentProfile = !existingAgentProfile
+    const routeNeedsUpdate = settingsToSplit.galleryProfileId !== (existingImageProfile?.id ?? null) || settingsToSplit.agentProfileId !== (existingAgentProfile?.id ?? null)
+    const nameNeedsUpdate = Boolean(
+      existingImageProfile && isGenericProfileName(existingImageProfile.name)
+        || existingAgentProfile && isGenericProfileName(existingAgentProfile.name),
+    )
+
+    if (!needsImageProfile && !needsAgentProfile && !routeNeedsUpdate && !nameNeedsUpdate) return null
+
+    const imageProfile: ApiProfile = existingImageProfile
+      ? {
+          ...existingImageProfile,
+          name: isGenericProfileName(existingImageProfile.name) ? '图片生成 · Images API' : existingImageProfile.name,
+        }
+      : {
+          ...source,
+          id: source.apiMode === 'images' ? source.id : newId('openai-images'),
+          name: '图片生成 · Images API',
+          apiMode: 'images',
+          model: source.apiMode === 'images' && source.model.trim() ? source.model : DEFAULT_IMAGES_MODEL,
+          streamImages: false,
+        }
+    const agentProfile: ApiProfile = existingAgentProfile
+      ? {
+          ...existingAgentProfile,
+          name: isGenericProfileName(existingAgentProfile.name) ? 'Agent · Responses API' : existingAgentProfile.name,
+        }
+      : {
+          ...source,
+          id: source.apiMode === 'responses' ? source.id : newId('openai-responses'),
+          name: 'Agent · Responses API',
+          apiMode: 'responses',
+          model: source.apiMode === 'responses' && source.model.trim() ? source.model : DEFAULT_RESPONSES_MODEL,
+          streamImages: true,
+        }
+    const seenUsageModes = new Set<string>(['openai:images', 'openai:responses'])
+    const profiles = [
+      imageProfile,
+      agentProfile,
+      ...settingsToSplit.profiles.filter((profile) => {
+        if (profile.id === imageProfile.id || profile.id === agentProfile.id) return false
+        if (profile.provider === 'openai' && (profile.apiMode === 'images' || profile.apiMode === 'responses')) {
+          const routeKey = `${profile.provider}:${profile.apiMode}`
+          if (seenUsageModes.has(routeKey)) return false
+          seenUsageModes.add(routeKey)
+        }
+        return true
+      }),
+    ]
+
+    return normalizeSettings({
+      ...settingsToSplit,
+      profiles,
+      activeProfileId: settingsToSplit.activeProfileId === source.id && source.apiMode === 'responses' ? agentProfile.id : imageProfile.id,
+      galleryProfileId: imageProfile.id,
+      agentProfileId: agentProfile.id,
+    })
+  }
+
   const enabledZipDownloadRouteCount = ZIP_DOWNLOAD_ROUTE_OPTIONS
     .filter((option) => draft.zipDownloadRoutes.includes(option.route))
     .length
@@ -432,10 +513,12 @@ export default function SettingsModal() {
           : false,
       })),
     })
-    setDraft(nextDraft)
-    setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
-    setAgentMaxToolRoundsInput(String(nextDraft.agentMaxToolRounds))
-  }, [apiProxyAvailable, apiProxyLocked, showSettings, settings, reusedTaskApiProfileId])
+    const routedDraft = ensureOpenAIUsageRouteProfiles(nextDraft) ?? nextDraft
+    setDraft(routedDraft)
+    if (routedDraft !== nextDraft) setSettings(routedDraft)
+    setTimeoutInput(String(getActiveApiProfile(routedDraft).timeout))
+    setAgentMaxToolRoundsInput(String(routedDraft.agentMaxToolRounds))
+  }, [apiProxyAvailable, apiProxyLocked, defaultConfigOnly, showSettings, settings, reusedTaskApiProfileId])
 
   useEffect(() => {
     setTimeoutInput(String(activeProfile.timeout))
@@ -548,6 +631,12 @@ export default function SettingsModal() {
       activeProfileId: normalizedProfiles.some((profile) => profile.id === nextDraft.activeProfileId)
         ? nextDraft.activeProfileId
         : (normalizedProfiles[0]?.id ?? fallbackProfile.id),
+      galleryProfileId: normalizedProfiles.some((profile) => profile.id === nextDraft.galleryProfileId)
+        ? nextDraft.galleryProfileId
+        : null,
+      agentProfileId: normalizedProfiles.some((profile) => profile.id === nextDraft.agentProfileId)
+        ? nextDraft.agentProfileId
+        : null,
     })
     setDraft(normalizedDraft)
     setSettings(normalizedDraft)
@@ -1505,32 +1594,6 @@ export default function SettingsModal() {
                         复制导入 URL
                       </ViewportTooltip>
                     </span>
-                    {!defaultConfigOnly && <span className="relative inline-flex">
-                      <button
-                        type="button"
-                        onClick={duplicateActiveProfile}
-                        onMouseEnter={() => setDuplicateProfileTooltipVisible(true)}
-                        onMouseLeave={() => setDuplicateProfileTooltipVisible(false)}
-                        onFocus={() => setDuplicateProfileTooltipVisible(true)}
-                        onBlur={() => setDuplicateProfileTooltipVisible(false)}
-                        onTouchStart={() => {
-                          clearDuplicateProfileTooltipTimer()
-                          duplicateProfileTooltipTimerRef.current = window.setTimeout(() => {
-                            setDuplicateProfileTooltipVisible(true)
-                            duplicateProfileTooltipTimerRef.current = null
-                          }, 450)
-                        }}
-                        onTouchEnd={clearDuplicateProfileTooltipTimer}
-                        onTouchCancel={clearDuplicateProfileTooltipTimer}
-                        className="flex h-5 w-5 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/[0.08] dark:hover:text-gray-200"
-                        aria-label={`复制一份配置「${activeProfile.name}」`}
-                      >
-                        <CopyIcon className="h-3.5 w-3.5" />
-                      </button>
-                      <ViewportTooltip visible={duplicateProfileTooltipVisible} className="whitespace-nowrap">
-                        复制当前配置
-                      </ViewportTooltip>
-                    </span>}
                   </div>
                   <div ref={profileMenuRef} className="relative">
                     <button
@@ -1550,6 +1613,9 @@ export default function SettingsModal() {
                         <span className="shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400">
                           {getApiProviderLabel(draft, activeProfile.provider)}
                         </span>
+                        <span className="hidden shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-white/[0.08] dark:text-gray-400 sm:inline">
+                          {getProfileUsageLabel(activeProfile)}
+                        </span>
                       </span>
                       <ChevronDownIcon className={`w-3.5 h-3.5 flex-shrink-0 text-gray-400 dark:text-gray-500 transition-transform duration-200 ${showProfileMenu ? 'rotate-180' : ''}`} />
                     </button>
@@ -1560,19 +1626,6 @@ export default function SettingsModal() {
                           className="absolute right-0 top-full z-50 mt-1.5 w-full overflow-hidden overflow-y-auto rounded-xl border border-gray-200/60 bg-white/95 py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] ring-1 ring-black/5 backdrop-blur-xl animate-dropdown-down dark:border-white/[0.08] dark:bg-gray-900/95 dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] dark:ring-white/10 custom-scrollbar"
                           style={{ maxHeight: profileMenuMaxHeight }}
                         >
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.preventDefault()
-                              createNewProfile()
-                            }}
-                            className="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 text-left text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-500/10"
-                          >
-                            <span className="truncate font-semibold">创建新配置</span>
-                            <span className="flex h-5 w-5 shrink-0 items-center justify-center">
-                              <PlusIcon className="h-4 w-4" />
-                            </span>
-                          </button>
                           <div>
                             {draft.profiles.map(profile => (
                               <div
@@ -1615,6 +1668,9 @@ export default function SettingsModal() {
                                   <span className={`rounded px-1.5 py-0.5 text-[10px] shrink-0 ${profile.id === activeProfile.id ? 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300' : 'bg-gray-100 text-gray-500 dark:bg-white/[0.08] dark:text-gray-400'}`}>
                                     {getApiProviderLabel(draft, profile.provider)}
                                   </span>
+                                  <span className={`hidden rounded px-1.5 py-0.5 text-[10px] shrink-0 sm:inline ${profile.id === activeProfile.id ? 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300' : 'bg-gray-100 text-gray-500 dark:bg-white/[0.08] dark:text-gray-400'}`}>
+                                    {getProfileUsageLabel(profile)}
+                                  </span>
                                 </div>
                                 
                                 <div className="flex shrink-0 items-center gap-1">
@@ -1631,7 +1687,7 @@ export default function SettingsModal() {
                                   >
                                     <LinkIcon className="h-3.5 w-3.5" />
                                   </button>
-                                  {draft.profiles.length > 1 && (
+                                  {draft.profiles.length > 2 && profile.id !== draft.galleryProfileId && profile.id !== draft.agentProfileId && (
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -1660,6 +1716,57 @@ export default function SettingsModal() {
                 </div>
 
               {/* 1. 配置名称 */}
+              <div className="rounded-2xl border border-blue-100 bg-blue-50/70 p-3 dark:border-blue-500/20 dark:bg-blue-500/10">
+                <div className="mb-2">
+                  <div className="text-sm font-medium text-blue-800 dark:text-blue-200">用途路由</div>
+                  <div data-selectable-text className="mt-1 text-xs leading-5 text-blue-700/80 dark:text-blue-200/70">
+                    可以让图片生成和 Agent 使用不同 API 配置/渠道；未指定时会跟随当前配置。
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-1 block text-xs text-blue-700 dark:text-blue-200">图片生成默认配置</span>
+                    <Select
+                      value={galleryRoutedProfile?.id ?? '__current__'}
+                      onChange={(value) => {
+                        commitSettings({
+                          ...draft,
+                          galleryProfileId: value === '__current__' ? null : String(value),
+                        })
+                      }}
+                      options={[
+                        { label: `跟随当前配置（${activeProfile.name}）`, value: '__current__' },
+                        ...draft.profiles.map((profile) => ({
+                          label: `${profile.name} · ${getApiProviderLabel(draft, profile.provider)} · ${getProfileUsageLabel(profile)}`,
+                          value: profile.id,
+                        })),
+                      ]}
+                      className="w-full rounded-xl border border-blue-200/70 bg-white/80 px-3 py-2 text-xs text-gray-700 outline-none transition focus:border-blue-300 dark:border-blue-400/20 dark:bg-black/20 dark:text-gray-200"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs text-blue-700 dark:text-blue-200">Agent 默认配置</span>
+                    <Select
+                      value={agentRoutedProfile?.id ?? '__current__'}
+                      onChange={(value) => {
+                        commitSettings({
+                          ...draft,
+                          agentProfileId: value === '__current__' ? null : String(value),
+                        })
+                      }}
+                      options={[
+                        { label: `跟随当前配置（${activeProfile.name}）`, value: '__current__' },
+                        ...draft.profiles.map((profile) => ({
+                          label: `${profile.name} · ${getApiProviderLabel(draft, profile.provider)} · ${getProfileUsageLabel(profile)}`,
+                          value: profile.id,
+                        })),
+                      ]}
+                      className="w-full rounded-xl border border-blue-200/70 bg-white/80 px-3 py-2 text-xs text-gray-700 outline-none transition focus:border-blue-300 dark:border-blue-400/20 dark:bg-black/20 dark:text-gray-200"
+                    />
+                  </label>
+                </div>
+              </div>
+
               <label className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">配置名称</span>
                 <input

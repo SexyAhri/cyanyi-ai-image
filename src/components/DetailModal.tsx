@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
-import { useStore, getCachedImage, ensureImageCached, reuseConfig, editOutputs, removeTask, showCodexCliPrompt, getCodexCliPromptKey, retryTask } from '../store'
+import { useStore, getCachedImage, ensureImageCached, reuseConfig, editOutputs, removeTask, showCodexCliPrompt, getCodexCliPromptKey, getTaskVersionChain, retryTask } from '../store'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { useTooltip } from '../hooks/useTooltip'
@@ -23,6 +23,7 @@ export default function DetailModal() {
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const showToast = useStore((s) => s.showToast)
   const openFavoritePicker = useStore((s) => s.openFavoritePicker)
+  const updateTaskMetadata = useStore((s) => s.updateTaskMetadata)
   const settings = useStore((s) => s.settings)
   const dismissedCodexCliPrompts = useStore((s) => s.dismissedCodexCliPrompts)
   const streamPreviewSrc = useStore((s) => detailTaskId ? s.streamPreviews[detailTaskId] || '' : '')
@@ -38,6 +39,10 @@ export default function DetailModal() {
   const [showRawUrlsModal, setShowRawUrlsModal] = useState(false)
   const [showRawResponseModal, setShowRawResponseModal] = useState(false)
   const [streamPreviewLoaded, setStreamPreviewLoaded] = useState(false)
+  const [compareEnabled, setCompareEnabled] = useState(false)
+  const [comparePosition, setComparePosition] = useState(50)
+  const [noteInput, setNoteInput] = useState('')
+  const [tagsInput, setTagsInput] = useState('')
   const modalRef = useRef<HTMLDivElement>(null)
   const rawUrlsModalRef = useRef<HTMLDivElement>(null)
   const rawResponseModalRef = useRef<HTMLDivElement>(null)
@@ -103,6 +108,11 @@ export default function DetailModal() {
   useEffect(() => {
     setImageIndex(0)
   }, [detailTaskId])
+
+  useEffect(() => {
+    setNoteInput(task?.note ?? '')
+    setTagsInput((task?.tags ?? []).join('，'))
+  }, [task?.id, task?.note, task?.tags])
 
   useEffect(() => {
     if (task?.status !== 'running' && !(task?.status === 'error' && (task.falRecoverable || task.customRecoverable))) return
@@ -178,6 +188,11 @@ export default function DetailModal() {
   const currentOutputError = currentOutputSlot?.error || ''
   const currentOriginalOutputImageId = currentOutputImageIndex >= 0 ? task?.transparentOriginalImages?.[currentOutputImageIndex] || '' : ''
   const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || '' : ''
+  const versionChain = useMemo(() => (task ? getTaskVersionChain(task.id, tasks) : []), [task, tasks])
+  const parentTask = task?.parentTaskId ? tasks.find((item) => item.id === task.parentTaskId) ?? null : null
+  const beforeImageId = parentTask?.outputImages?.[0] || allInputImageIds[0] || ''
+  const beforeImageSrc = beforeImageId ? (outputPreviewSrcs[beforeImageId] || imageSrcs[beforeImageId] || '') : ''
+  const canCompare = Boolean(currentOutputPreviewSrc && beforeImageSrc)
 
   useEffect(() => {
     const outputImageIds = task?.outputImages ?? []
@@ -208,6 +223,21 @@ export default function DetailModal() {
       cancelled = true
     }
   }, [task?.outputImages])
+
+  useEffect(() => {
+    if (!beforeImageId || beforeImageSrc) return
+    let cancelled = false
+    ensureImageCached(beforeImageId)
+      .then((dataUrl) => {
+        if (cancelled || !dataUrl) return
+        setOutputPreviewSrcs((prev) => ({ ...prev, [beforeImageId]: dataUrl }))
+        setImageSrcs((prev) => ({ ...prev, [beforeImageId]: dataUrl }))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [beforeImageId, beforeImageSrc])
 
   useEffect(() => {
     let cancelled = false
@@ -326,6 +356,21 @@ export default function DetailModal() {
     } catch (err) {
       showToast(getClipboardFailureMessage('复制提示词失败', err), 'error')
     }
+  }
+
+  const handleNoteChange = (value: string) => {
+    setNoteInput(value)
+    updateTaskMetadata(task.id, { note: value })
+  }
+
+  const handleTagsChange = (value: string) => {
+    setTagsInput(value)
+    updateTaskMetadata(task.id, {
+      tags: value
+        .split(/[，,\s#]+/)
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+    })
   }
 
   const handleShowPromptWarning = () => {
@@ -475,6 +520,16 @@ export default function DetailModal() {
                   </ViewportTooltip>
                 </div>
               )}
+              {canCompare && (
+                <button
+                  type="button"
+                  onClick={() => setCompareEnabled((value) => !value)}
+                  className={`flex items-center justify-center rounded px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm transition focus:outline-none focus:ring-1 focus:ring-white/50 ${compareEnabled ? 'bg-blue-500 hover:bg-blue-600' : 'bg-black/50 hover:bg-black/70'}`}
+                  aria-label="Before after compare"
+                >
+                  对比
+                </button>
+              )}
               {task.outputImages.length > 1 && (
                 <div className="relative group flex">
                   <button
@@ -499,28 +554,67 @@ export default function DetailModal() {
           )}
           {task.status === 'done' && outputLen > 0 && currentOutputPreviewSrc && (
             <>
-              <img
-                src={currentOutputPreviewSrc}
-                data-image-id={currentOutputImageId}
-                className="saveable-image max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] object-contain cursor-pointer"
-                onLoad={(e) => {
-                  const image = e.currentTarget
-                  if (currentOutputImageId && image.naturalWidth > 0 && image.naturalHeight > 0) {
-                    setImageRatios((prev) => ({
-                      ...prev,
-                      [currentOutputImageId]: formatImageRatio(image.naturalWidth, image.naturalHeight),
-                    }))
-                    setImageSizes((prev) => ({
-                      ...prev,
-                      [currentOutputImageId]: `${image.naturalWidth}×${image.naturalHeight}`,
-                    }))
+              {compareEnabled && canCompare ? (
+                <div className="relative max-h-[calc(100%-2rem)] max-w-[calc(100%-2rem)] overflow-hidden rounded-xl bg-black/10">
+                  <img src={beforeImageSrc} className="block max-h-[calc(90vh-8rem)] max-w-full object-contain" alt="" />
+                  <div className="absolute inset-0 overflow-hidden" style={{ clipPath: `inset(0 ${100 - comparePosition}% 0 0)` }}>
+                    <img
+                      src={currentOutputPreviewSrc}
+                      data-image-id={currentOutputImageId}
+                      className="saveable-image h-full w-full object-contain"
+                      onLoad={(e) => {
+                        const image = e.currentTarget
+                        if (currentOutputImageId && image.naturalWidth > 0 && image.naturalHeight > 0) {
+                          setImageRatios((prev) => ({
+                            ...prev,
+                            [currentOutputImageId]: formatImageRatio(image.naturalWidth, image.naturalHeight),
+                          }))
+                          setImageSizes((prev) => ({
+                            ...prev,
+                            [currentOutputImageId]: `${image.naturalWidth}×${image.naturalHeight}`,
+                          }))
+                        }
+                      }}
+                      alt=""
+                    />
+                  </div>
+                  <div className="absolute inset-y-0 z-10 w-0.5 bg-white shadow" style={{ left: `${comparePosition}%` }} />
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={comparePosition}
+                    onChange={(e) => setComparePosition(Number(e.target.value))}
+                    className="absolute inset-x-4 bottom-4 z-20"
+                    aria-label="before after compare"
+                  />
+                  <span className="absolute left-3 top-3 rounded bg-black/50 px-2 py-0.5 text-xs text-white">Before</span>
+                  <span className="absolute right-3 top-3 rounded bg-black/50 px-2 py-0.5 text-xs text-white">After</span>
+                </div>
+              ) : (
+                <img
+                  src={currentOutputPreviewSrc}
+                  data-image-id={currentOutputImageId}
+                  className="saveable-image max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] object-contain cursor-pointer"
+                  onLoad={(e) => {
+                    const image = e.currentTarget
+                    if (currentOutputImageId && image.naturalWidth > 0 && image.naturalHeight > 0) {
+                      setImageRatios((prev) => ({
+                        ...prev,
+                        [currentOutputImageId]: formatImageRatio(image.naturalWidth, image.naturalHeight),
+                      }))
+                      setImageSizes((prev) => ({
+                        ...prev,
+                        [currentOutputImageId]: `${image.naturalWidth}×${image.naturalHeight}`,
+                      }))
+                    }
+                  }}
+                  onClick={() =>
+                    setLightboxImageId(currentOutputImageId, task.outputImages)
                   }
-                }}
-                onClick={() =>
-                  setLightboxImageId(currentOutputImageId, task.outputImages)
-                }
-                alt=""
-              />
+                  alt=""
+                />
+              )}
               <div data-selectable-text className="absolute left-4 top-[15px] flex items-center gap-1.5">
                 {currentImageRatio && currentImageSize ? (
                   <>
@@ -887,6 +981,37 @@ export default function DetailModal() {
               </div>
             )}
 
+            <div className="mb-4 rounded-2xl border border-gray-200/70 bg-gray-50/70 p-3 dark:border-white/[0.08] dark:bg-white/[0.03]">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-xs font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                  备注与标签
+                </h3>
+                <span className="text-[11px] text-gray-400 dark:text-gray-500">可搜索</span>
+              </div>
+              <textarea
+                value={noteInput}
+                onChange={(e) => handleNoteChange(e.target.value)}
+                placeholder="记录用途、客户、修改方向，例如：小红书封面、A 客户首版..."
+                rows={3}
+                className="w-full resize-none rounded-xl border border-gray-200/70 bg-white/80 px-3 py-2 text-sm leading-5 text-gray-700 outline-none transition placeholder:text-gray-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10 dark:border-white/[0.08] dark:bg-black/10 dark:text-gray-200 dark:placeholder:text-gray-500 dark:focus:border-blue-500/50"
+              />
+              <input
+                value={tagsInput}
+                onChange={(e) => handleTagsChange(e.target.value)}
+                placeholder="标签，用逗号或空格分隔：头像 商用 待改"
+                className="mt-2 w-full rounded-xl border border-gray-200/70 bg-white/80 px-3 py-2 text-sm text-gray-700 outline-none transition placeholder:text-gray-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10 dark:border-white/[0.08] dark:bg-black/10 dark:text-gray-200 dark:placeholder:text-gray-500 dark:focus:border-blue-500/50"
+              />
+              {(task.tags?.length ?? 0) > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {task.tags!.map((tag) => (
+                    <span key={tag} className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-300">
+                      #{tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* 参考图 */}
             {showReferenceSection && (
               <div className="mb-4">
@@ -951,6 +1076,30 @@ export default function DetailModal() {
             )}
 
             {/* 参数 */}
+            {versionChain.length > 1 && (
+              <div className="mb-4">
+                <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                  版本链
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {versionChain.map((item, index) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setDetailTaskId(item.id)}
+                      className={`rounded-full px-3 py-1 text-xs transition ${
+                        item.id === task.id
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.12]'
+                      }`}
+                    >
+                      V{index + 1}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <h3 className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
               参数配置
             </h3>
