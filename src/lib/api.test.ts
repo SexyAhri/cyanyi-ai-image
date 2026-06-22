@@ -100,6 +100,372 @@ describe('callImageApi', () => {
     expect(result.revisedPrompts).toEqual(['移除靴子'])
   })
 
+  it('calls Gemini generateContent for nano-banana-2 image models', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{
+        content: {
+          parts: [{
+            inlineData: {
+              mimeType: 'image/png',
+              data: 'aW1hZ2U=',
+            },
+          }],
+        },
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await callImageApi({
+      settings: withOpenAIProfile({
+        provider: 'gemini',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        apiKey: 'gemini-key',
+        model: 'nano-banana-2',
+        apiMode: 'images',
+        apiProxy: false,
+      }),
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent')
+    expect((init as RequestInit).headers).toMatchObject({
+      'x-goog-api-key': 'gemini-key',
+      'Content-Type': 'application/json',
+    })
+    expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({
+      contents: [{
+        role: 'user',
+        parts: [{ text: 'prompt' }],
+      }],
+      generationConfig: {
+        responseModalities: ['TEXT', 'IMAGE'],
+      },
+    })
+    expect(result.images).toEqual(['data:image/png;base64,aW1hZ2U='])
+  })
+
+  it('calls NewAPI chat completions for non-Google Gemini-compatible image models', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response([
+        'data: {"choices":[{"delta":{"content":"[progress: 1%]\\n"}}]}',
+        '',
+        'data: {"choices":[{"delta":{"content":"![image](https://oss.example.com/result.png)\\n"}}]}',
+        '',
+        'data: [DONE]',
+        '',
+      ].join('\n'), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }))
+      .mockResolvedValueOnce(new Response(new Blob([Uint8Array.from([105, 109, 97, 103, 101])], { type: 'image/png' }), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      }))
+
+    const result = await callImageApi({
+      settings: withOpenAIProfile({
+        provider: 'gemini',
+        baseUrl: 'https://ai.cyanyi.com/v1',
+        apiKey: 'newapi-key',
+        model: 'nano-banana-2',
+        apiMode: 'images',
+        apiProxy: false,
+      }),
+      prompt: '生成一张测试图片',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toBe('https://ai.cyanyi.com/v1/chat/completions')
+    expect((init as RequestInit).headers).toMatchObject({
+      Authorization: 'Bearer newapi-key',
+      'Content-Type': 'application/json',
+    })
+    expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({
+      model: 'nano-banana-2',
+      messages: [{
+        role: 'user',
+        content: '生成一张测试图片',
+      }],
+      stream: true,
+    })
+    expect(fetchMock.mock.calls[1][0]).toBe('https://oss.example.com/result.png')
+    expect(result.images).toEqual(['data:image/png;base64,aW1hZ2U='])
+    expect(result.rawImageUrls).toEqual(['https://oss.example.com/result.png'])
+  })
+
+  it('calls NewAPI chat completions for Grok through the standard API key endpoint', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response([
+        'data: {"choices":[{"delta":{"reasoning_content":"图片正在生成 50% (0/1)\\n","role":"assistant"}}]}',
+        '',
+        'data: {"choices":[{"delta":{"content":"![image](https://grok.cnmz.de/v1/files/image?id=955ffaa3-dfa7-4814-8b3f-536fb18b7248)","role":"assistant"}}]}',
+        '',
+        'data: [DONE]',
+        '',
+      ].join('\n'), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }))
+      .mockResolvedValueOnce(new Response(new Blob([Uint8Array.from([105, 109, 97, 103, 101])], { type: 'image/png' }), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      }))
+
+    const result = await callImageApi({
+      settings: withOpenAIProfile({
+        provider: 'grok',
+        baseUrl: 'https://ai.cyanyi.com/v1',
+        apiKey: 'newapi-key',
+        model: 'grok-image',
+        apiMode: 'images',
+        apiProxy: false,
+      }),
+      prompt: '生成一张测试图片',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toBe('https://ai.cyanyi.com/v1/chat/completions')
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body).toMatchObject({
+      model: 'grok-image',
+      messages: [{
+        role: 'user',
+        content: '生成一张测试图片',
+      }],
+      stream: true,
+    })
+    expect(body).not.toHaveProperty('group')
+    expect(fetchMock.mock.calls[1][0]).toBe('https://grok.cnmz.de/v1/files/image?id=955ffaa3-dfa7-4814-8b3f-536fb18b7248')
+    expect(result.images).toEqual(['data:image/png;base64,aW1hZ2U='])
+    expect(result.rawImageUrls).toEqual(['https://grok.cnmz.de/v1/files/image?id=955ffaa3-dfa7-4814-8b3f-536fb18b7248'])
+  })
+
+  it('keeps Grok image URLs when browser download is blocked by CORS', async () => {
+    const imageUrl = 'https://grok.cnmz.de/v1/files/image?id=blocked-by-cors'
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response([
+        `data: {"choices":[{"delta":{"content":"![image](${imageUrl})","role":"assistant"}}]}`,
+        '',
+        'data: [DONE]',
+        '',
+      ].join('\n'), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+
+    const result = await callImageApi({
+      settings: withOpenAIProfile({
+        provider: 'grok',
+        baseUrl: 'https://ai.cyanyi.com/v1',
+        apiKey: 'newapi-key',
+        model: 'grok-image',
+        apiMode: 'images',
+        apiProxy: false,
+      }),
+      prompt: '生成一张测试图片',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(result.images).toEqual([imageUrl])
+    expect(result.rawImageUrls).toEqual([imageUrl])
+  })
+
+  it('retries empty NewAPI chat completion streams before reporting failure', async () => {
+    const imageUrl = 'https://grok.cnmz.de/v1/files/image?id=retry-success'
+    const emptyStream = [
+      'data: {"id":"","object":"","created":0,"model":"","system_fingerprint":null,"choices":null,"usage":null}',
+      '',
+      'data: {"id":"","object":"chat.completion.chunk","created":0,"model":"","system_fingerprint":"","choices":[],"usage":{"prompt_tokens":141,"completion_tokens":0,"total_tokens":141}}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+    const successStream = [
+      `data: {"choices":[{"delta":{"content":"![image](${imageUrl})","role":"assistant"}}]}`,
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(emptyStream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }))
+      .mockResolvedValueOnce(new Response(successStream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }))
+      .mockResolvedValueOnce(new Response(new Blob([Uint8Array.from([105, 109, 97, 103, 101])], { type: 'image/png' }), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      }))
+
+    const result = await callImageApi({
+      settings: withOpenAIProfile({
+        provider: 'grok',
+        baseUrl: 'https://ai.cyanyi.com/v1',
+        apiKey: 'newapi-key',
+        model: 'grok-image',
+        apiMode: 'images',
+        apiProxy: false,
+      }),
+      prompt: '生成一张测试图片',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls[0][0]).toBe('https://ai.cyanyi.com/v1/chat/completions')
+    expect(fetchMock.mock.calls[1][0]).toBe('https://ai.cyanyi.com/v1/chat/completions')
+    expect(result.rawImageUrls).toEqual([imageUrl])
+  })
+
+  it('reports a clear error after retrying repeated empty NewAPI chat completion streams', async () => {
+    const emptyStream = [
+      'data: {"id":"","object":"","created":0,"model":"","system_fingerprint":null,"choices":null,"usage":null}',
+      '',
+      'data: {"id":"","object":"chat.completion.chunk","created":0,"model":"","system_fingerprint":"","choices":[],"usage":{"prompt_tokens":141,"completion_tokens":0,"total_tokens":141}}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+    const createEmptyResponse = () => new Response(emptyStream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(createEmptyResponse())
+      .mockResolvedValueOnce(createEmptyResponse())
+
+    await expect(callImageApi({
+      settings: withOpenAIProfile({
+        provider: 'grok',
+        baseUrl: 'https://ai.cyanyi.com/v1',
+        apiKey: 'newapi-key',
+        model: 'grok-image',
+        apiMode: 'images',
+        apiProxy: false,
+      }),
+      prompt: '生成一张测试图片',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toMatchObject({
+      message: 'Grok 兼容接口连续返回空响应，已自动重试但仍未拿到图片，请稍后再试。',
+      rawResponsePayload: expect.stringContaining('"choices": []'),
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports Grok-compatible empty image responses with raw payload', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response([
+      'data: {"choices":[{"delta":{"reasoning_content":"图片正在生成 100% (1/1)\\n","role":"assistant"}}]}',
+      '',
+      'data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":"stop"}]}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n'), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    }))
+
+    await expect(callImageApi({
+      settings: withOpenAIProfile({
+        provider: 'grok',
+        baseUrl: 'https://ai.cyanyi.com/v1',
+        apiKey: 'newapi-key',
+        model: 'grok-image',
+        apiMode: 'images',
+        apiProxy: false,
+      }),
+      prompt: '生成一张测试图片',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toMatchObject({
+      message: 'Grok 兼容接口没有返回图片链接，请确认模型会输出 Markdown 图片链接。',
+      rawResponsePayload: expect.stringContaining('reasoning_content'),
+    })
+  })
+
+  it('reports NewAPI business errors even when HTTP status is 200', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      message: '无权进行此操作，access token 无效',
+      success: false,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(callImageApi({
+      settings: withOpenAIProfile({
+        provider: 'grok',
+        baseUrl: 'https://ai.cyanyi.com/v1',
+        apiKey: 'bad-token',
+        model: 'grok-image',
+        apiMode: 'images',
+        apiProxy: false,
+      }),
+      prompt: '生成一张测试图片',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toMatchObject({
+      message: '无权进行此操作，access token 无效',
+      rawResponsePayload: expect.stringContaining('"success": false'),
+    })
+  })
+
+  it('parses non-stream NewAPI chat completion image links for Gemini-compatible models', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: '绘图已完成：https://oss.example.com/non-stream.webp',
+          },
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(new Blob([Uint8Array.from([105, 109, 97, 103, 101])], { type: 'image/webp' }), {
+        status: 200,
+        headers: { 'Content-Type': 'image/webp' },
+      }))
+
+    const result = await callImageApi({
+      settings: withOpenAIProfile({
+        provider: 'gemini',
+        baseUrl: 'https://ai.cyanyi.com/v1',
+        apiKey: 'newapi-key',
+        model: 'nano-banana-2',
+        apiMode: 'images',
+        apiProxy: false,
+      }),
+      prompt: '生成一张测试图片',
+      params: { ...DEFAULT_PARAMS, output_format: 'webp' },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(result.images).toEqual(['data:image/webp;base64,aW1hZ2U='])
+    expect(result.rawImageUrls).toEqual(['https://oss.example.com/non-stream.webp'])
+  })
+
   it('does not synthesize actual quality in Codex CLI mode when the API omits it', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       output_format: 'png',

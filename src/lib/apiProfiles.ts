@@ -30,10 +30,16 @@ export const DEFAULT_RESPONSES_MODEL = 'gpt-image-2'
 export const DEFAULT_AGENT_MODEL = 'gpt-5.5'
 export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
+const LEGACY_NEWAPI_PLAYGROUND_BASE_URL = 'https://ai.cyanyi.com/pg'
+export const DEFAULT_GEMINI_BASE_URL = OPENAI_DEFAULT_BASE_URL
+export const GOOGLE_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta'
+export const DEFAULT_GEMINI_MODEL = 'nano-banana-2'
+export const DEFAULT_GROK_BASE_URL = OPENAI_DEFAULT_BASE_URL
+export const DEFAULT_GROK_MODEL = 'grok-image'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_API_TIMEOUT = 600
 
-const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal'])
+const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal', 'gemini', 'grok'])
 const DEFAULT_CUSTOM_PROVIDER_PATHS = {
   generationPath: 'images/generations',
   editPath: 'images/edits',
@@ -105,6 +111,14 @@ function isCustomProviderTemplate(value: unknown): value is CustomProviderTempla
 
 function normalizeProviderPath(value: unknown, fallback: string): string {
   return (typeof value === 'string' && value.trim() ? value : fallback).trim().replace(/^\/+/, '').replace(/^v1\//, '')
+}
+
+function normalizeBuiltInProfileBaseUrl(provider: ApiProvider, value: string | undefined, fallback: string): string {
+  const normalized = (value?.trim().replace(/\/+$/, '') || fallback)
+  if ((provider === 'gemini' || provider === 'grok') && normalized === LEGACY_NEWAPI_PLAYGROUND_BASE_URL) {
+    return provider === 'grok' ? DEFAULT_GROK_BASE_URL : DEFAULT_GEMINI_BASE_URL
+  }
+  return normalized
 }
 
 function normalizeStringRecord(value: unknown): Record<string, string> | undefined {
@@ -374,6 +388,38 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     }
   }
 
+  if (provider === 'gemini') {
+    return {
+      ...profile,
+      provider,
+      baseUrl: savedDraft?.baseUrl ?? DEFAULT_GEMINI_BASE_URL,
+      model: savedDraft?.model ?? DEFAULT_GEMINI_MODEL,
+      apiMode: 'images',
+      codexCli: false,
+      apiProxy: false,
+      responseFormatB64Json: savedDraft?.responseFormatB64Json,
+      streamImages: false,
+      streamPartialImages: savedDraft?.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES,
+      providerDrafts,
+    }
+  }
+
+  if (provider === 'grok') {
+    return {
+      ...profile,
+      provider,
+      baseUrl: savedDraft?.baseUrl ?? DEFAULT_GROK_BASE_URL,
+      model: savedDraft?.model ?? DEFAULT_GROK_MODEL,
+      apiMode: 'images',
+      codexCli: false,
+      apiProxy: false,
+      responseFormatB64Json: savedDraft?.responseFormatB64Json,
+      streamImages: false,
+      streamPartialImages: savedDraft?.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES,
+      providerDrafts,
+    }
+  }
+
   if (customProvider) {
     const shouldUseOpenAIDefaults = profile.provider === 'fal'
     return {
@@ -416,17 +462,27 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
 
 function normalizeProviderDraft(input: unknown, provider: ApiProvider, customProviderIds: Set<string>): ApiProfileProviderDraft {
   if (!isRecord(input)) return undefined
-  const fallback = provider === 'fal' ? createDefaultFalProfile() : createDefaultOpenAIProfile()
+  const fallback = provider === 'fal'
+    ? createDefaultFalProfile()
+    : provider === 'gemini'
+      ? createDefaultGeminiProfile()
+      : provider === 'grok'
+        ? createDefaultGrokProfile()
+        : createDefaultOpenAIProfile()
   const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl : undefined
   const model = typeof input.model === 'string' && input.model.trim() ? input.model : undefined
   const apiMode = input.apiMode === 'responses' ? 'responses' : input.apiMode === 'images' ? 'images' : undefined
-  const knownProvider = provider === 'fal' || provider === 'openai' || customProviderIds.has(provider)
+  const knownProvider = provider === 'fal' || provider === 'gemini' || provider === 'grok' || provider === 'openai' || customProviderIds.has(provider)
   if (!knownProvider) return undefined
 
   return {
     baseUrl: provider === 'fal'
-      ? baseUrl?.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
-      : baseUrl,
+      ? normalizeBuiltInProfileBaseUrl(provider, baseUrl, DEFAULT_FAL_BASE_URL)
+      : provider === 'gemini'
+        ? normalizeBuiltInProfileBaseUrl(provider, baseUrl, DEFAULT_GEMINI_BASE_URL)
+        : provider === 'grok'
+          ? normalizeBuiltInProfileBaseUrl(provider, baseUrl, DEFAULT_GROK_BASE_URL)
+          : baseUrl,
     model,
     apiMode,
     codexCli: typeof input.codexCli === 'boolean' ? input.codexCli : fallback.codexCli,
@@ -449,11 +505,15 @@ function normalizeProviderDrafts(input: unknown, customProviderIds: Set<string>)
 export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfile>, customProviderIds = new Set<string>()): ApiProfile {
   const record = input && typeof input === 'object' ? input as Record<string, unknown> : {}
   const rawProvider = typeof record.provider === 'string' ? record.provider : ''
-  const provider: ApiProvider = rawProvider === 'fal' || customProviderIds.has(rawProvider) ? rawProvider : 'openai'
+  const provider: ApiProvider = rawProvider === 'fal' || rawProvider === 'gemini' || rawProvider === 'grok' || customProviderIds.has(rawProvider) ? rawProvider : 'openai'
   const apiMode: ApiMode = provider === 'openai' && record.apiMode === 'responses' ? 'responses' : 'images'
   const defaults = provider === 'fal'
     ? createDefaultFalProfile(fallback)
-    : createDefaultOpenAIProfile({ ...fallback, apiMode })
+    : provider === 'gemini'
+      ? createDefaultGeminiProfile(fallback)
+      : provider === 'grok'
+        ? createDefaultGrokProfile(fallback)
+        : createDefaultOpenAIProfile({ ...fallback, apiMode })
   const rawBaseUrl = typeof record.baseUrl === 'string' ? record.baseUrl : defaults.baseUrl
   const streamImages = provider === 'openai'
     ? typeof record.streamImages === 'boolean' ? record.streamImages : defaults.streamImages
@@ -464,7 +524,13 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
     id: typeof record.id === 'string' && record.id.trim() ? record.id : defaults.id,
     name: typeof record.name === 'string' && record.name.trim() ? record.name : defaults.name,
     provider,
-    baseUrl: provider === 'fal' ? rawBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL : rawBaseUrl,
+    baseUrl: provider === 'fal'
+      ? normalizeBuiltInProfileBaseUrl(provider, rawBaseUrl, DEFAULT_FAL_BASE_URL)
+      : provider === 'gemini'
+        ? normalizeBuiltInProfileBaseUrl(provider, rawBaseUrl, DEFAULT_GEMINI_BASE_URL)
+        : provider === 'grok'
+          ? normalizeBuiltInProfileBaseUrl(provider, rawBaseUrl, DEFAULT_GROK_BASE_URL)
+          : rawBaseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
     model: typeof record.model === 'string' && record.model.trim() ? record.model : defaults.model,
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : defaults.timeout,
@@ -495,6 +561,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
   const record = input && typeof input === 'object' ? input as Record<string, unknown> : {}
   const customProviders = normalizeCustomProviderDefinitions(record.customProviders)
   const customProviderIds = new Set(customProviders.map((provider) => provider.id))
+  const geminiDefaultBaseUrlMigrated = record.geminiDefaultBaseUrlMigrated === true
   const legacyApiMode: ApiMode = record.apiMode === 'responses' ? 'responses' : 'images'
   const legacyProfile = createDefaultOpenAIProfile({
     baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : DEFAULT_BASE_URL,
@@ -508,9 +575,10 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     streamImages: typeof record.streamImages === 'boolean' ? record.streamImages : undefined,
     streamPartialImages: normalizeStreamPartialImages(record.streamPartialImages),
   })
-  const profiles = Array.isArray(record.profiles) && record.profiles.length
+  const normalizedProfiles = Array.isArray(record.profiles) && record.profiles.length
     ? record.profiles.map((profile) => normalizeApiProfile(profile, undefined, customProviderIds))
     : [legacyProfile]
+  const profiles = normalizedProfiles
   const activeProfileId = typeof record.activeProfileId === 'string' && profiles.some((p) => p.id === record.activeProfileId)
     ? record.activeProfileId
     : profiles[0].id
@@ -518,8 +586,11 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
   const galleryProfileId = typeof record.galleryProfileId === 'string' && profiles.some((p) => p.id === record.galleryProfileId)
     ? record.galleryProfileId
     : null
-  const agentProfileId = typeof record.agentProfileId === 'string' && profiles.some((p) => p.id === record.agentProfileId)
+  const agentProfileId = typeof record.agentProfileId === 'string' && profiles.some((p) => p.id === record.agentProfileId && p.provider === 'openai' && p.apiMode === 'responses')
     ? record.agentProfileId
+    : null
+  const agentImageProfileId = typeof record.agentImageProfileId === 'string' && profiles.some((p) => p.id === record.agentImageProfileId)
+    ? record.agentImageProfileId
     : null
 
   return {
@@ -534,6 +605,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     streamPartialImages: active.streamPartialImages,
     customProviders,
     providerOrder: Array.isArray(record.providerOrder) ? record.providerOrder.map(String) : undefined,
+    geminiDefaultBaseUrlMigrated: true,
     clearInputAfterSubmit: typeof record.clearInputAfterSubmit === 'boolean' ? record.clearInputAfterSubmit : false,
     persistInputOnRestart: typeof record.persistInputOnRestart === 'boolean' ? record.persistInputOnRestart : true,
     reuseTaskApiProfileTemporarily: typeof record.reuseTaskApiProfileTemporarily === 'boolean' ? record.reuseTaskApiProfileTemporarily : false,
@@ -553,6 +625,43 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     activeProfileId,
     galleryProfileId,
     agentProfileId,
+    agentImageProfileId,
+  }
+}
+
+export function createDefaultGeminiProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
+  return {
+    id: `gemini-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    name: 'Gemini 图片生成',
+    provider: 'gemini',
+    baseUrl: DEFAULT_GEMINI_BASE_URL,
+    apiKey: '',
+    model: DEFAULT_GEMINI_MODEL,
+    timeout: DEFAULT_API_TIMEOUT,
+    apiMode: 'images',
+    codexCli: false,
+    apiProxy: false,
+    streamImages: false,
+    streamPartialImages: DEFAULT_STREAM_PARTIAL_IMAGES,
+    ...overrides,
+  }
+}
+
+export function createDefaultGrokProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
+  return {
+    id: `grok-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    name: 'Grok 图片生成',
+    provider: 'grok',
+    baseUrl: DEFAULT_GROK_BASE_URL,
+    apiKey: '',
+    model: DEFAULT_GROK_MODEL,
+    timeout: DEFAULT_API_TIMEOUT,
+    apiMode: 'images',
+    codexCli: false,
+    apiProxy: false,
+    streamImages: false,
+    streamPartialImages: DEFAULT_STREAM_PARTIAL_IMAGES,
+    ...overrides,
   }
 }
 
@@ -563,6 +672,8 @@ export function getCustomProviderDefinition(settings: Partial<AppSettings> | unk
 
 export function getApiProviderLabel(settings: Partial<AppSettings> | unknown, provider: ApiProvider): string {
   if (provider === 'fal') return 'fal.ai'
+  if (provider === 'gemini') return 'Gemini'
+  if (provider === 'grok') return 'Grok'
   if (provider === 'openai') return 'OpenAI'
   return getCustomProviderDefinition(settings, provider)?.name ?? provider
 }
@@ -662,15 +773,28 @@ export function getGalleryApiProfile(settings: Partial<AppSettings> | unknown): 
   return getActiveApiProfile(settings)
 }
 
+export function isAgentCompatibleApiProfile(profile: ApiProfile): boolean {
+  return profile.provider === 'openai' && profile.apiMode === 'responses'
+}
+
 export function getAgentApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile {
   const normalized = normalizeSettings(settings)
   const routed = normalized.agentProfileId
     ? normalized.profiles.find((profile) => profile.id === normalized.agentProfileId)
     : null
-  if (routed) return routed
   const active = getActiveApiProfile(settings)
-  if (active.provider === 'openai' && active.apiMode === 'responses') return active
-  return normalized.profiles.find((profile) => profile.provider === 'openai' && profile.apiMode === 'responses') ?? active
+  if (routed && isAgentCompatibleApiProfile(routed)) return routed
+  if (isAgentCompatibleApiProfile(active)) return active
+  return normalized.profiles.find(isAgentCompatibleApiProfile) ?? active
+}
+
+export function getAgentImageApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile {
+  const normalized = normalizeSettings(settings)
+  const routed = normalized.agentImageProfileId
+    ? normalized.profiles.find((profile) => profile.id === normalized.agentImageProfileId)
+    : null
+  if (routed) return routed
+  return getAgentApiProfile(settings)
 }
 
 export function validateApiProfile(profile: ApiProfile): string | null {
@@ -851,6 +975,7 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   streamImages: true,
   streamPartialImages: DEFAULT_STREAM_PARTIAL_IMAGES,
   customProviders: [],
+  geminiDefaultBaseUrlMigrated: true,
   clearInputAfterSubmit: false,
   persistInputOnRestart: true,
   reuseTaskApiProfileTemporarily: false,

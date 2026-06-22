@@ -24,6 +24,7 @@ import {
   DEFAULT_SETTINGS,
   getActiveApiProfile,
   getAgentApiProfile,
+  getAgentImageApiProfile,
   getCustomProviderDefinition,
   getGalleryApiProfile,
   mergeImportedSettings,
@@ -61,6 +62,7 @@ import {
   callAgentResponsesApi,
   callBatchImageSingle,
   parseBatchImageCallArguments,
+  parseSingleImageCallArguments,
   type AgentApiResultImage,
 } from "./lib/agentApi";
 import {
@@ -1709,7 +1711,7 @@ export const useStore = create<AppState>()(
 
         const state = get();
         const settings = normalizeSettings(state.settings);
-        const activeProfile = getActiveApiProfile(settings);
+        const activeProfile = getAgentApiProfile(settings);
 
         if (
           activeProfile.provider === "openai" &&
@@ -4938,6 +4940,7 @@ export async function submitAgentMessage() {
   const { settings, prompt, inputImages, maskDraft, params, showToast } = state;
   const normalizedSettings = normalizeSettings(settings);
   const activeProfile = getAgentApiProfile(settings);
+  const agentImageProfile = getAgentImageApiProfile(settings);
 
   if (
     activeProfile.provider !== "openai" ||
@@ -4950,6 +4953,16 @@ export async function submitAgentMessage() {
   if (validateApiProfile(activeProfile)) {
     showToast(
       `请先完善请求 API 配置：${validateApiProfile(activeProfile)}`,
+      "error",
+    );
+    state.setShowSettings(true);
+    return;
+  }
+
+  const agentImageValidationError = validateApiProfile(agentImageProfile);
+  if (agentImageValidationError) {
+    showToast(
+      `请先完善 Agent 生图 API 配置：${agentImageValidationError}`,
       "error",
     );
     state.setShowSettings(true);
@@ -5004,6 +5017,10 @@ export async function submitAgentMessage() {
     normalizedSettings,
     activeProfile,
   );
+  const imageRequestSettings = createSettingsForApiProfile(
+    normalizedSettings,
+    agentImageProfile,
+  );
   const now = Date.now();
   const editingRound = state.agentEditingRoundId
     ? (conversation.rounds.find(
@@ -5048,7 +5065,7 @@ export async function submitAgentMessage() {
     ? getAgentRoundPath(conversation, parentRoundId)
     : [];
   const normalizedParams = {
-    ...normalizeParamsForSettings(params, requestSettings, {
+    ...normalizeParamsForSettings(params, imageRequestSettings, {
       hasInputImages: inputImageIds.length > 0,
     }),
     n: DEFAULT_PARAMS.n,
@@ -5142,6 +5159,7 @@ export async function submitAgentMessage() {
     normalizedParams,
     requestSettings,
     activeProfile,
+    agentImageProfile,
   );
 }
 
@@ -5153,6 +5171,7 @@ export async function regenerateAgentAssistantMessage(
   const { settings, params, showToast } = state;
   const normalizedSettings = normalizeSettings(settings);
   const activeProfile = getAgentApiProfile(settings);
+  const agentImageProfile = getAgentImageApiProfile(settings);
 
   if (
     activeProfile.provider !== "openai" ||
@@ -5165,6 +5184,16 @@ export async function regenerateAgentAssistantMessage(
   if (validateApiProfile(activeProfile)) {
     showToast(
       `请先完善请求 API 配置：${validateApiProfile(activeProfile)}`,
+      "error",
+    );
+    state.setShowSettings(true);
+    return;
+  }
+
+  const agentImageValidationError = validateApiProfile(agentImageProfile);
+  if (agentImageValidationError) {
+    showToast(
+      `请先完善 Agent 生图 API 配置：${agentImageValidationError}`,
       "error",
     );
     state.setShowSettings(true);
@@ -5196,8 +5225,12 @@ export async function regenerateAgentAssistantMessage(
     normalizedSettings,
     activeProfile,
   );
+  const imageRequestSettings = createSettingsForApiProfile(
+    normalizedSettings,
+    agentImageProfile,
+  );
   const normalizedParams = {
-    ...normalizeParamsForSettings(params, requestSettings, {
+    ...normalizeParamsForSettings(params, imageRequestSettings, {
       hasInputImages: inputImageIds.length > 0,
     }),
     n: DEFAULT_PARAMS.n,
@@ -5243,6 +5276,7 @@ export async function regenerateAgentAssistantMessage(
       normalizedParams,
       requestSettings,
       activeProfile,
+      agentImageProfile,
     );
     return;
   }
@@ -5297,6 +5331,7 @@ export async function regenerateAgentAssistantMessage(
     normalizedParams,
     requestSettings,
     activeProfile,
+    agentImageProfile,
   );
 }
 
@@ -5306,6 +5341,7 @@ async function executeAgentRound(
   params: TaskParams,
   requestSettings: AppSettings,
   activeProfile: ApiProfile,
+  agentImageProfile: ApiProfile,
 ) {
   const startedAt = Date.now();
   useStore.getState().addAgentDiagnosticLog({
@@ -5370,6 +5406,8 @@ async function executeAgentRound(
         ) ?? null);
     const assistantMessageId = existingAssistantMessage?.id ?? genId();
     const shouldStreamAssistantMessage = activeProfile.streamImages === true;
+    const shouldStreamImagePreviews =
+      activeProfile.streamImages === true || agentImageProfile.streamImages === true;
     const streamingTaskIds: string[] = [];
     const taskIdByToolCallId = new Map<string, string>();
 
@@ -5429,11 +5467,11 @@ async function executeAgentRound(
         id: genId(),
         prompt: taskPrompt,
         params: { ...params, n: 1 },
-        apiProvider: activeProfile.provider,
-        apiProfileId: activeProfile.id,
-        apiProfileName: activeProfile.name,
-        apiMode: activeProfile.apiMode,
-        apiModel: activeProfile.model,
+        apiProvider: agentImageProfile.provider,
+        apiProfileId: agentImageProfile.id,
+        apiProfileName: agentImageProfile.name,
+        apiMode: agentImageProfile.apiMode,
+        apiModel: agentImageProfile.model,
         inputImageIds,
         maskTargetImageId:
           options.maskTargetImageId !== undefined
@@ -5610,6 +5648,94 @@ async function executeAgentRound(
       return { dataUrls, imageIds };
     };
 
+    const executeSingleImageFunctionCall = async (
+      functionCallItem: ResponsesOutputItem,
+    ): Promise<string> => {
+      const args = functionCallItem.arguments ?? "";
+      const item = parseSingleImageCallArguments(args);
+
+      if (!item) {
+        return JSON.stringify({ error: "Invalid or empty image arguments" });
+      }
+
+      const referenceIds = uniqueIds(extractAgentReferenceIds(item.prompt));
+      const references = await resolveReferenceImages(referenceIds);
+      const toolCallId = functionCallItem.call_id || genId();
+      await ensureStreamingAgentTask(
+        toolCallId,
+        item.prompt,
+        references.imageIds,
+        {
+          createdAt: Date.now(),
+          maskTargetImageId: null,
+          maskImageId: null,
+        },
+      );
+
+      const result = await callBatchImageSingle({
+        settings: requestSettings,
+        profile: agentImageProfile,
+        params,
+        batchItemId: "image",
+        prompt: item.prompt,
+        referenceImageDataUrls: references.dataUrls,
+        referenceIds,
+        signal: controller.signal,
+        onImageToolStarted: shouldStreamImagePreviews
+          ? async () => {
+              if (controller.signal.aborted) return;
+            }
+          : undefined,
+        onPartialImage: shouldStreamImagePreviews
+          ? async ({ image, partialImageIndex }) => {
+              if (controller.signal.aborted) return;
+              const taskId = taskIdByToolCallId.get(toolCallId);
+              if (taskId) {
+                useStore
+                  .getState()
+                  .setTaskStreamPreview(taskId, image, partialImageIndex);
+                if (partialImageIndex === 0 || partialImageIndex == null) {
+                  void persistTaskStreamPartialImage(taskId, image);
+                }
+              }
+            }
+          : undefined,
+        onImageToolCompleted: shouldStreamImagePreviews
+          ? async (image) => {
+              if (controller.signal.aborted) return;
+              await completeAgentImageTask({
+                ...image,
+                toolCallId,
+              });
+            }
+          : undefined,
+      });
+
+      if (result.image && !shouldStreamImagePreviews) {
+        await completeAgentImageTask(
+          { ...result.image, toolCallId },
+          result.rawResponsePayload,
+        );
+      }
+
+      if (!result.image) {
+        failAgentImageTask(
+          toolCallId,
+          result.error ?? "接口未返回图片数据",
+          result.rawResponsePayload,
+        );
+      } else {
+        toolCallsUsed += 1;
+      }
+
+      return JSON.stringify({
+        image: {
+          status: result.image ? "done" : "error",
+          ...(result.error ? { error: sanitizeProviderErrorMessage(result.error) } : {}),
+        },
+      });
+    };
+
     // Helper: execute a generate_image_batch function call concurrently
     const executeBatchFunctionCall = async (
       functionCallItem: ResponsesOutputItem,
@@ -5652,19 +5778,19 @@ async function executeAgentRound(
         async ({ item, batchToolCallId, references, referenceIds }) => {
           const batchResult = await callBatchImageSingle({
             settings: requestSettings,
-            profile: activeProfile,
+            profile: agentImageProfile,
             params,
             batchItemId: item.id,
             prompt: item.prompt,
             referenceImageDataUrls: references.dataUrls,
             referenceIds,
             signal: controller.signal,
-            onImageToolStarted: shouldStreamAssistantMessage
+            onImageToolStarted: shouldStreamImagePreviews
               ? async () => {
                   if (controller.signal.aborted) return;
                 }
               : undefined,
-            onPartialImage: shouldStreamAssistantMessage
+            onPartialImage: shouldStreamImagePreviews
               ? async ({ image, partialImageIndex }) => {
                   if (controller.signal.aborted) return;
                   const taskId = taskIdByToolCallId.get(batchToolCallId);
@@ -5678,7 +5804,7 @@ async function executeAgentRound(
                   }
                 }
               : undefined,
-            onImageToolCompleted: shouldStreamAssistantMessage
+            onImageToolCompleted: shouldStreamImagePreviews
               ? async (image) => {
                   if (controller.signal.aborted) return;
                   await completeAgentImageTask({
@@ -5690,7 +5816,7 @@ async function executeAgentRound(
           });
 
           // If not streaming and we have an image, complete the pre-created task.
-          if (batchResult.image && !shouldStreamAssistantMessage) {
+          if (batchResult.image && !shouldStreamImagePreviews) {
             await completeAgentImageTask(
               { ...batchResult.image, toolCallId: batchToolCallId },
               batchResult.rawResponsePayload,
@@ -5756,6 +5882,7 @@ async function executeAgentRound(
       const requestOptions = {
         settings: requestSettings,
         profile: activeProfile,
+        imageProfile: agentImageProfile,
         params,
         maskDataUrl,
         signal: controller.signal,
@@ -5971,11 +6098,11 @@ async function executeAgentRound(
           id: genId(),
           prompt: image.revisedPrompt ?? round?.prompt ?? userMessage.content,
           params,
-          apiProvider: activeProfile.provider,
-          apiProfileId: activeProfile.id,
-          apiProfileName: activeProfile.name,
-          apiMode: activeProfile.apiMode,
-          apiModel: activeProfile.model,
+          apiProvider: agentImageProfile.provider,
+          apiProfileId: agentImageProfile.id,
+          apiProfileName: agentImageProfile.name,
+          apiMode: agentImageProfile.apiMode,
+          apiModel: agentImageProfile.model,
           inputImageIds: uniqueIds([
             ...(round?.inputImageIds ?? []),
             ...promptRefs.imageIds,
@@ -6019,6 +6146,10 @@ async function executeAgentRound(
       }
 
       // Check for function calls that require continuation
+      const singleImageFunctionCalls = currentResponseOutputItems.filter(
+        (item) =>
+          item.type === "function_call" && item.name === "generate_image",
+      );
       const batchFunctionCalls = currentResponseOutputItems.filter(
         (item) =>
           item.type === "function_call" && item.name === "generate_image_batch",
@@ -6036,6 +6167,17 @@ async function executeAgentRound(
 
       // Collect function_call_output items for all function calls that need responses
       const functionCallOutputs: ResponsesOutputItem[] = [];
+
+      if (singleImageFunctionCalls.length > 0) {
+        for (const fc of singleImageFunctionCalls) {
+          const output = await executeSingleImageFunctionCall(fc);
+          functionCallOutputs.push({
+            type: "function_call_output",
+            call_id: fc.call_id,
+            output,
+          });
+        }
+      }
 
       if (batchFunctionCalls.length > 0) {
         for (const fc of batchFunctionCalls) {

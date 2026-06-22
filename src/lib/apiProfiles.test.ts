@@ -2,12 +2,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
+  DEFAULT_GEMINI_BASE_URL,
+  DEFAULT_GROK_BASE_URL,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_SETTINGS,
+  GOOGLE_GEMINI_BASE_URL,
   createDefaultOpenAIProfile,
   createDefaultFalProfile,
+  createDefaultGrokProfile,
   getActiveApiProfile,
+  getAgentApiProfile,
+  getAgentImageApiProfile,
   findEquivalentApiProfile,
   importCustomProviderDefinitionFromJson,
   importCustomProviderSettingsFromJson,
@@ -101,6 +107,89 @@ describe('mergeImportedSettings', () => {
 
     expect(merged.profiles.map((profile) => profile.id)).toEqual(['imported-openai', 'imported-fal'])
     expect(merged.activeProfileId).toBe('imported-fal')
+  })
+
+  it('normalizes Gemini playground URL to the NewAPI-compatible endpoint', () => {
+    const settings = normalizeSettings({
+      profiles: [{
+        id: 'gemini-profile',
+        name: 'Gemini',
+        provider: 'gemini',
+        baseUrl: 'https://ai.cyanyi.com/pg/',
+        apiKey: 'gemini-key',
+        model: 'nano-banana-2',
+        timeout: 600,
+        apiMode: 'images',
+        codexCli: false,
+        apiProxy: false,
+      }],
+      activeProfileId: 'gemini-profile',
+    })
+
+    expect(settings.activeProfileId).toBe('gemini-profile')
+    expect(settings.profiles[0]).toMatchObject({
+      provider: 'gemini',
+      baseUrl: DEFAULT_GEMINI_BASE_URL,
+      apiKey: 'gemini-key',
+      model: 'nano-banana-2',
+      apiMode: 'images',
+    })
+    expect(settings.baseUrl).toBe(DEFAULT_GEMINI_BASE_URL)
+    expect(settings.apiKey).toBe('gemini-key')
+    expect(settings.model).toBe('nano-banana-2')
+    expect(settings.geminiDefaultBaseUrlMigrated).toBe(true)
+  })
+
+  it('preserves the Google Gemini URL when explicitly configured', () => {
+    const settings = normalizeSettings({
+      geminiDefaultBaseUrlMigrated: true,
+      profiles: [{
+        id: 'gemini-profile',
+        name: 'Gemini',
+        provider: 'gemini',
+        baseUrl: GOOGLE_GEMINI_BASE_URL,
+        apiKey: 'gemini-key',
+        model: 'nano-banana-2',
+        timeout: 600,
+        apiMode: 'images',
+        codexCli: false,
+        apiProxy: false,
+      }],
+      activeProfileId: 'gemini-profile',
+    })
+
+    expect(settings.profiles[0].baseUrl).toBe(GOOGLE_GEMINI_BASE_URL)
+    expect(settings.baseUrl).toBe(GOOGLE_GEMINI_BASE_URL)
+  })
+
+  it('normalizes Grok playground URL to the NewAPI-compatible endpoint', () => {
+    const settings = normalizeSettings({
+      profiles: [{
+        id: 'grok-profile',
+        name: 'Grok',
+        provider: 'grok',
+        baseUrl: 'https://ai.cyanyi.com/pg/',
+        apiKey: 'grok-key',
+        model: 'grok-image',
+        timeout: 600,
+        apiMode: 'images',
+        codexCli: false,
+        apiProxy: false,
+      }],
+      activeProfileId: 'grok-profile',
+    })
+
+    expect(settings.activeProfileId).toBe('grok-profile')
+    expect(settings.profiles[0]).toMatchObject({
+      provider: 'grok',
+      baseUrl: DEFAULT_GROK_BASE_URL,
+      apiKey: 'grok-key',
+      model: 'grok-image',
+      apiMode: 'images',
+    })
+    expect(settings.baseUrl).toBe(DEFAULT_GROK_BASE_URL)
+    expect(settings.apiKey).toBe('grok-key')
+    expect(settings.model).toBe('grok-image')
   })
 
   it('deduplicates imported profiles when replacing untouched default settings', () => {
@@ -648,6 +737,69 @@ describe('custom providers', () => {
     expect(DEFAULT_SETTINGS.agentMathFormattingPrompt).toBe(true)
     expect(normalizeSettings({}).agentMathFormattingPrompt).toBe(true)
     expect(normalizeSettings({ agentMathFormattingPrompt: false }).agentMathFormattingPrompt).toBe(false)
+  })
+
+  it('routes Agent image generation to the selected profile with fallback to Agent profile', () => {
+    const agentProfile = createDefaultOpenAIProfile({
+      id: 'agent-responses',
+      name: 'Agent Responses',
+      apiKey: 'agent-key',
+      apiMode: 'responses',
+      model: 'agent-model',
+    })
+    const imageProfile = createDefaultOpenAIProfile({
+      id: 'image-responses',
+      name: 'Agent Image',
+      apiKey: 'image-key',
+      apiMode: 'responses',
+      model: 'image-model',
+    })
+    const settings = normalizeSettings({
+      profiles: [agentProfile, imageProfile],
+      activeProfileId: agentProfile.id,
+      agentProfileId: agentProfile.id,
+      agentImageProfileId: imageProfile.id,
+    })
+
+    expect(settings.agentImageProfileId).toBe(imageProfile.id)
+    expect(getAgentImageApiProfile(settings)).toMatchObject({
+      id: imageProfile.id,
+      model: 'image-model',
+    })
+
+    const fallback = normalizeSettings({
+      profiles: [agentProfile, imageProfile],
+      activeProfileId: agentProfile.id,
+      agentProfileId: agentProfile.id,
+      agentImageProfileId: 'missing-profile',
+    })
+    expect(fallback.agentImageProfileId).toBeNull()
+    expect(getAgentImageApiProfile(fallback).id).toBe(agentProfile.id)
+  })
+
+  it('ignores non-Responses profiles saved as the Agent brain route', () => {
+    const grokProfile = createDefaultGrokProfile({
+      id: 'grok-image',
+      name: 'Grok Image',
+      apiKey: 'grok-key',
+    })
+    const agentProfile = createDefaultOpenAIProfile({
+      id: 'agent-responses',
+      name: 'Agent Responses',
+      apiKey: 'agent-key',
+      apiMode: 'responses',
+      model: 'agent-model',
+    })
+    const settings = normalizeSettings({
+      profiles: [grokProfile, agentProfile],
+      activeProfileId: grokProfile.id,
+      agentProfileId: grokProfile.id,
+      agentImageProfileId: grokProfile.id,
+    })
+
+    expect(settings.agentProfileId).toBeNull()
+    expect(getAgentApiProfile(settings).id).toBe(agentProfile.id)
+    expect(getAgentImageApiProfile(settings).id).toBe(grokProfile.id)
   })
 
   it('restores OpenAI-compatible URL after switching through fal.ai', () => {

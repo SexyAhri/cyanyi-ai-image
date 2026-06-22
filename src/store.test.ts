@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { strToU8, zipSync } from 'fflate'
 import { DEFAULT_PARAMS } from './types'
-import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
+import { createDefaultFalProfile, createDefaultGrokProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
 import type { AgentConversation, ExportData, StoredImage, StoredImageThumbnail, TaskRecord } from './types'
 import { getSelectedImageMentionLabel } from './lib/promptImageMentions'
 vi.mock('./lib/db', () => {
@@ -1233,6 +1233,31 @@ describe('agent draft lifecycle', () => {
     expect(state.maskDraft).toEqual(draftState.maskDraft)
     expect(state.maskEditorImageId).toBe(imageA.id)
     expect(state.agentEditingRoundId).toBeNull()
+  })
+
+  it('uses the routed Responses profile when the current profile is Grok', () => {
+    const grokProfile = createDefaultGrokProfile({
+      id: 'grok-image',
+      name: 'Grok Image',
+      apiKey: 'grok-key',
+    })
+    useStore.setState({
+      appMode: 'gallery',
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [grokProfile, responsesProfile],
+        activeProfileId: grokProfile.id,
+        agentProfileId: responsesProfile.id,
+        agentImageProfileId: grokProfile.id,
+      }),
+      confirmDialog: null,
+    })
+
+    useStore.getState().setAppMode('agent')
+
+    const state = useStore.getState()
+    expect(state.appMode).toBe('agent')
+    expect(state.confirmDialog).toBeNull()
   })
 
   it('keeps the gallery draft when switching into agent mode and back', () => {

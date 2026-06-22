@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
-import { createDefaultOpenAIProfile, DEFAULT_SETTINGS } from './apiProfiles'
-import { callAgentConversationTitleApi, callAgentResponsesApi } from './agentApi'
+import { createDefaultGeminiProfile, createDefaultOpenAIProfile, DEFAULT_SETTINGS } from './apiProfiles'
+import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle } from './agentApi'
 
 describe('callAgentResponsesApi', () => {
   afterEach(() => {
@@ -305,6 +305,81 @@ describe('callAgentResponsesApi', () => {
 
     body = JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))
     expect(body.instructions).not.toContain('## Math formatting')
+  })
+
+  it('uses app function tools when Agent image generation is routed to an external profile', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'message',
+        content: [{ type: 'output_text', text: 'OK' }],
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const agentProfile = createDefaultOpenAIProfile({
+      id: 'agent-responses',
+      apiKey: 'agent-key',
+      apiMode: 'responses',
+      model: 'agent-model',
+    })
+    const imageProfile = createDefaultGeminiProfile({
+      id: 'banana-image',
+      apiKey: 'banana-key',
+      baseUrl: 'https://ai.example.com/pg',
+      model: 'nano-banana-2',
+    })
+
+    await callAgentResponsesApi({
+      settings: DEFAULT_SETTINGS,
+      profile: agentProfile,
+      imageProfile,
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'draw one image' }] }],
+    })
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    expect(body.model).toBe(DEFAULT_SETTINGS.agentModel)
+    expect(body.model).not.toBe('nano-banana-2')
+    expect(body.instructions).toContain('Use generate_image for a single requested image.')
+    expect(body.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'function', name: 'generate_image' }),
+      expect.objectContaining({ type: 'function', name: 'generate_image_batch' }),
+    ]))
+    expect(body.tools).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'image_generation' }),
+    ]))
+  })
+
+  it('uses the image profile model for app-executed Responses image calls', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'image_generation_call',
+        result: 'ZmluYWw=',
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const imageProfile = createDefaultOpenAIProfile({
+      id: 'agent-image-responses',
+      apiKey: 'image-key',
+      apiMode: 'responses',
+      model: 'image2',
+    })
+
+    await callBatchImageSingle({
+      settings: { ...DEFAULT_SETTINGS, agentModel: 'agent-brain-model' },
+      profile: imageProfile,
+      params: DEFAULT_PARAMS,
+      batchItemId: 'image',
+      prompt: 'draw one image',
+      referenceImageDataUrls: [],
+    })
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    expect(body.model).toBe('image2')
+    expect(body.model).not.toBe('agent-brain-model')
   })
 
   it("does not duplicate the assistant message item when response.completed lacks an item id", async () => {

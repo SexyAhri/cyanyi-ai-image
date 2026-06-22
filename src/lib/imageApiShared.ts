@@ -91,7 +91,7 @@ export function assertMaskEditFileSize(label: string, bytes: number) {
   assertMaxBytes(label, bytes, MAX_MASK_EDIT_FILE_BYTES)
 }
 
-async function blobToDataUrl(blob: Blob, fallbackMime: string): Promise<string> {
+export async function blobToDataUrl(blob: Blob, fallbackMime: string): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer())
   let binary = ''
 
