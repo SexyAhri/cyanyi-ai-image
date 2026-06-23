@@ -17,6 +17,7 @@ import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, DEFAULT_Z
 import { shouldUseApiProxy } from './devProxy'
 import { readRuntimeEnv } from './runtimeEnv'
 import { isImportableConfigUrl } from './customProviderConfigUrl'
+import { DEFAULT_VIDEO_MODEL } from './videoModels'
 
 const OPENAI_DEFAULT_BASE_URL = 'https://ai.cyanyi.com/v1'
 const RAW_DEFAULT_API_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL)
@@ -27,6 +28,7 @@ const DEFAULT_BASE_URL = isImportableConfigUrl(RAW_DEFAULT_API_URL)
   : RAW_DEFAULT_API_URL || OPENAI_DEFAULT_BASE_URL
 export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
 export const DEFAULT_RESPONSES_MODEL = 'gpt-image-2'
+export const DEFAULT_VIDEOS_MODEL = DEFAULT_VIDEO_MODEL
 export const DEFAULT_AGENT_MODEL = 'gpt-5.5'
 export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
@@ -68,7 +70,7 @@ const DEFAULT_EDIT_FILES: CustomProviderFileMapping[] = [
 type ApiProfileProviderDraft = NonNullable<ApiProfile['providerDrafts']>[ApiProvider]
 
 function getDefaultStreamImages(provider: ApiProvider, apiMode: ApiMode): boolean {
-  return provider === 'openai' && apiMode === 'responses'
+  return provider === 'openai' && (apiMode === 'images' || apiMode === 'responses' || apiMode === 'videos')
 }
 
 export function normalizeStreamPartialImages(value: unknown, fallback: number | undefined = DEFAULT_STREAM_PARTIAL_IMAGES): number {
@@ -320,6 +322,11 @@ export function normalizeCustomProviderDefinitions(input: unknown): CustomProvid
 export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
   const apiMode = overrides.apiMode ?? 'images'
   const streamImages = overrides.streamImages ?? getDefaultStreamImages('openai', apiMode)
+  const model = apiMode === 'videos'
+    ? DEFAULT_VIDEOS_MODEL
+    : apiMode === 'responses'
+      ? DEFAULT_RESPONSES_MODEL
+      : DEFAULT_IMAGES_MODEL
 
   return {
     id: DEFAULT_OPENAI_PROFILE_ID,
@@ -327,7 +334,7 @@ export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}):
     provider: 'openai',
     baseUrl: DEFAULT_BASE_URL,
     apiKey: '',
-    model: apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL,
+    model,
     timeout: DEFAULT_API_TIMEOUT,
     codexCli: false,
     apiProxy: DEFAULT_OPENAI_API_PROXY,
@@ -471,7 +478,7 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
         : createDefaultOpenAIProfile()
   const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl : undefined
   const model = typeof input.model === 'string' && input.model.trim() ? input.model : undefined
-  const apiMode = input.apiMode === 'responses' ? 'responses' : input.apiMode === 'images' ? 'images' : undefined
+  const apiMode = input.apiMode === 'responses' ? 'responses' : input.apiMode === 'videos' ? 'videos' : input.apiMode === 'images' ? 'images' : undefined
   const knownProvider = provider === 'fal' || provider === 'gemini' || provider === 'grok' || provider === 'openai' || customProviderIds.has(provider)
   if (!knownProvider) return undefined
 
@@ -506,7 +513,11 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
   const record = input && typeof input === 'object' ? input as Record<string, unknown> : {}
   const rawProvider = typeof record.provider === 'string' ? record.provider : ''
   const provider: ApiProvider = rawProvider === 'fal' || rawProvider === 'gemini' || rawProvider === 'grok' || customProviderIds.has(rawProvider) ? rawProvider : 'openai'
-  const apiMode: ApiMode = provider === 'openai' && record.apiMode === 'responses' ? 'responses' : 'images'
+  const apiMode: ApiMode = provider === 'openai' && record.apiMode === 'responses'
+    ? 'responses'
+    : provider === 'openai' && record.apiMode === 'videos'
+      ? 'videos'
+      : 'images'
   const defaults = provider === 'fal'
     ? createDefaultFalProfile(fallback)
     : provider === 'gemini'
@@ -552,7 +563,7 @@ function validateImportedProfileRecord(input: unknown) {
     throw new Error('JSON 包含 Markdown 链接，请粘贴纯文本')
   }
 
-  if (typeof input.apiMode === 'string' && input.apiMode !== 'images' && input.apiMode !== 'responses') {
+  if (typeof input.apiMode === 'string' && input.apiMode !== 'images' && input.apiMode !== 'responses' && input.apiMode !== 'videos') {
     throw new Error('apiMode 格式无效，应为 images 或 responses')
   }
 }
@@ -562,7 +573,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
   const customProviders = normalizeCustomProviderDefinitions(record.customProviders)
   const customProviderIds = new Set(customProviders.map((provider) => provider.id))
   const geminiDefaultBaseUrlMigrated = record.geminiDefaultBaseUrlMigrated === true
-  const legacyApiMode: ApiMode = record.apiMode === 'responses' ? 'responses' : 'images'
+  const legacyApiMode: ApiMode = record.apiMode === 'responses' ? 'responses' : record.apiMode === 'videos' ? 'videos' : 'images'
   const legacyProfile = createDefaultOpenAIProfile({
     baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : DEFAULT_BASE_URL,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : '',
@@ -591,6 +602,9 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     : null
   const agentImageProfileId = typeof record.agentImageProfileId === 'string' && profiles.some((p) => p.id === record.agentImageProfileId)
     ? record.agentImageProfileId
+    : null
+  const videoProfileId = typeof record.videoProfileId === 'string' && profiles.some((p) => p.id === record.videoProfileId)
+    ? record.videoProfileId
     : null
 
   return {
@@ -626,6 +640,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     galleryProfileId,
     agentProfileId,
     agentImageProfileId,
+    videoProfileId,
   }
 }
 
@@ -746,7 +761,7 @@ export function getActiveApiProfile(settings: Partial<AppSettings> | unknown): A
   const record = settings && typeof settings === 'object' ? settings as Record<string, unknown> : {}
   const normalized = normalizeSettings(settings)
   const profile = normalized.profiles.find((p) => p.id === normalized.activeProfileId) ?? normalized.profiles[0] ?? createDefaultOpenAIProfile()
-  const apiMode = profile.provider === 'openai' && (record.apiMode === 'images' || record.apiMode === 'responses')
+  const apiMode = profile.provider === 'openai' && (record.apiMode === 'images' || record.apiMode === 'responses' || record.apiMode === 'videos')
     ? record.apiMode
     : profile.apiMode
 
@@ -795,6 +810,17 @@ export function getAgentImageApiProfile(settings: Partial<AppSettings> | unknown
     : null
   if (routed) return routed
   return getAgentApiProfile(settings)
+}
+
+export function getVideoApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile {
+  const normalized = normalizeSettings(settings)
+  const routed = normalized.videoProfileId
+    ? normalized.profiles.find((profile) => profile.id === normalized.videoProfileId)
+    : null
+  if (routed) return routed
+  const active = getActiveApiProfile(settings)
+  if (active.provider === 'openai' && active.apiMode === 'videos') return active
+  return normalized.profiles.find((profile) => profile.provider === 'openai' && profile.apiMode === 'videos') ?? active
 }
 
 export function validateApiProfile(profile: ApiProfile): string | null {

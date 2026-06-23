@@ -42,6 +42,9 @@ import {
   putTask as dbPutTask,
   deleteTask as dbDeleteTask,
   clearTasks as dbClearTasks,
+  getAllVideoRecords,
+  putVideoRecord,
+  clearVideoRecords,
   getAllAgentConversations,
   replaceAgentConversations,
   clearAgentConversations as dbClearAgentConversations,
@@ -1055,7 +1058,10 @@ function mergePersistedState(
       ))
       ? persisted.activeAgentConversationId
       : (agentConversations[0]?.id ?? null);
-  const appMode = persisted.appMode === "agent" ? "agent" : "gallery";
+  const appMode =
+    persisted.appMode === "agent" || persisted.appMode === "video"
+      ? persisted.appMode
+      : "gallery";
   const galleryInputDraft = settings.persistInputOnRestart
     ? normalizeAgentInputDraft(
         persisted.galleryInputDraft ?? {
@@ -1706,6 +1712,20 @@ export const useStore = create<AppState>()(
               ? restoreGalleryInputDraftState(galleryInputDraft)
               : {}),
           }));
+          return;
+        }
+
+        if (appMode === "video") {
+          const state = get();
+          const galleryInputDraft = saveGalleryInputDraft(state);
+          set({
+            appMode,
+            galleryInputDraft,
+            agentMobileHeaderVisible: true,
+            selectedTaskIds: [],
+            selectedFavoriteCollectionIds: [],
+            agentEditingRoundId: null,
+          });
           return;
         }
 
@@ -2848,7 +2868,9 @@ function scheduleTaskAutoRetry(
 }
 
 function getApiModeApiName(apiMode: ApiMode) {
-  return apiMode === "responses" ? "Responses API" : "Image API";
+  if (apiMode === "responses") return "Responses API";
+  if (apiMode === "videos") return "Videos API";
+  return "Image API";
 }
 
 function getApiRequestNetworkErrorHint(
@@ -7427,6 +7449,7 @@ export async function clearData(
 
   if (options.clearTasks) {
     await dbClearTasks();
+    await clearVideoRecords();
     await dbClearAgentConversations();
     await clearImages();
     imageCache.clear();
@@ -7457,8 +7480,12 @@ export async function clearData(
 
 /** 从 dataUrl 解析出 MIME 扩展名和二进制数据 */
 function dataUrlToBytes(dataUrl: string): { ext: string; bytes: Uint8Array } {
-  const match = dataUrl.match(/^data:image\/(\w+);base64,/);
-  const ext = match?.[1] ?? "png";
+  const match = dataUrl.match(/^data:([\w-]+)\/([\w+.-]+);base64,/);
+  const type = match?.[1] ?? "image";
+  const rawExt = match?.[2] ?? "png";
+  const ext = type === "video" && rawExt === "quicktime"
+    ? "mov"
+    : rawExt.replace("jpeg", "jpg");
   const b64 = dataUrl.replace(/^data:[^;]+;base64,/, "");
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
@@ -7474,6 +7501,9 @@ function bytesToDataUrl(bytes: Uint8Array, filePath: string): string {
     jpg: "image/jpeg",
     jpeg: "image/jpeg",
     webp: "image/webp",
+    mp4: "video/mp4",
+    webm: "video/webm",
+    mov: "video/quicktime",
   };
   const mime = mimeMap[ext] ?? "image/png";
   let binary = "";
@@ -7572,6 +7602,7 @@ export async function exportData(
   try {
     const tasks = options.exportTasks ? await getAllTasks() : [];
     const images = options.exportTasks ? await getAllImages() : [];
+    const videoRecords = options.exportTasks ? await getAllVideoRecords() : [];
     const {
       settings,
       agentConversations,
@@ -7602,6 +7633,7 @@ export async function exportData(
 
     const imageFiles: ExportData["imageFiles"] = {};
     const thumbnailFiles: NonNullable<ExportData["thumbnailFiles"]> = {};
+    const videoFiles: NonNullable<ExportData["videoFiles"]> = {};
     const zipFiles: Record<string, Uint8Array | [Uint8Array, { mtime: Date }]> =
       {};
 
@@ -7648,6 +7680,20 @@ export async function exportData(
           });
         }
       }
+
+      for (const record of videoRecords) {
+        const videoDataUrl = record.video?.dataUrl;
+        if (!videoDataUrl) continue;
+        const { ext, bytes } = dataUrlToBytes(videoDataUrl);
+        const path = `videos/${record.id}.${ext}`;
+        videoFiles[record.id] = {
+          path,
+          mimeType: record.video?.mimeType,
+          bytes: record.video?.bytes ?? bytes.byteLength,
+          createdAt: record.createdAt,
+        };
+        zipFiles[path] = [bytes, { mtime: new Date(record.createdAt) }];
+      }
     }
 
     const manifest: ExportData = {
@@ -7661,12 +7707,16 @@ export async function exportData(
     }
     if (options.exportTasks) {
       manifest.tasks = tasks;
+      manifest.videoRecords = videoRecords.map((record) => record.video?.dataUrl
+        ? { ...record, video: { ...record.video, dataUrl: undefined } }
+        : record);
       manifest.favoriteCollections = favoriteCollections;
       manifest.defaultFavoriteCollectionId = defaultFavoriteCollectionId;
       manifest.agentConversations =
         getPersistableAgentConversations(agentConversations);
       manifest.imageFiles = imageFiles;
       manifest.thumbnailFiles = thumbnailFiles;
+      manifest.videoFiles = videoFiles;
     }
 
     zipFiles["manifest.json"] = [
@@ -7716,9 +7766,9 @@ export async function importData(
     const data: ExportData = JSON.parse(strFromU8(manifestBytes));
 
     const importedImageIds: string[] = [];
-    if (options.importTasks && data.tasks && data.imageFiles) {
+    if (options.importTasks && (data.tasks || data.videoRecords)) {
       // 还原图片
-      for (const [id, info] of Object.entries(data.imageFiles)) {
+      for (const [id, info] of Object.entries(data.imageFiles ?? {})) {
         const bytes = unzipped[info.path];
         if (!bytes) continue;
         const dataUrl = bytesToDataUrl(bytes, info.path);
@@ -7753,8 +7803,24 @@ export async function importData(
         });
       }
 
-      for (const task of data.tasks) {
+      for (const task of data.tasks ?? []) {
         await putTask(task);
+      }
+
+      for (const record of data.videoRecords ?? []) {
+        const videoFile = data.videoFiles?.[record.id];
+        const videoBytes = videoFile ? unzipped[videoFile.path] : undefined;
+        await putVideoRecord({
+          ...record,
+          video: record.video
+            ? {
+                ...record.video,
+                dataUrl: record.video.dataUrl ?? (videoBytes && videoFile ? bytesToDataUrl(videoBytes, videoFile.path) : undefined),
+                mimeType: record.video.mimeType || videoFile?.mimeType || "video/mp4",
+                bytes: record.video.bytes || videoFile?.bytes || videoBytes?.byteLength || 0,
+              }
+            : undefined,
+        });
       }
 
       const tasks = await getAllTasks();
@@ -7837,8 +7903,10 @@ export async function importData(
     }
 
     let msg = "数据已成功导入";
-    if (options.importTasks && data.tasks) {
-      msg = `已导入 ${data.tasks.length} 个任务`;
+    if (options.importTasks && (data.tasks || data.videoRecords)) {
+      const taskCount = data.tasks?.length ?? 0;
+      const videoCount = data.videoRecords?.length ?? 0;
+      msg = `已导入 ${taskCount} 个图片任务、${videoCount} 条视频记录`;
     } else if (options.importConfig && data.settings) {
       msg = "配置已成功导入";
     }

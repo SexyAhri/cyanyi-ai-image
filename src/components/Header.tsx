@@ -20,14 +20,20 @@ export default function Header() {
   const helpTooltip = useTooltip()
   const utilityTooltip = useTooltip()
   const settingsTooltip = useTooltip()
+  const title = appMode === 'agent' ? 'Agent 工作台' : appMode === 'video' ? '视频创作台' : '画廊工作台'
+  const subtitle = appMode === 'agent'
+    ? '对话式生图 · 多轮引用前图'
+    : appMode === 'video'
+      ? '视频生成 · 支持参考素材'
+      : '释放灵感，生成你的下一张作品'
 
   return (
     <>
       <header data-no-drag-select className="cy-topbar safe-area-top">
         <div className="cy-topbar-inner">
           <div className="cy-topbar-title">
-            <span>{appMode === 'agent' ? 'Agent 工作台' : '画廊工作台'}</span>
-            <p>{appMode === 'agent' ? '对话式生图 · 多轮引用前图' : '释放灵感，生成你的下一张作品'}</p>
+            <span>{title}</span>
+            <p>{subtitle}</p>
           </div>
 
           <div className="cy-topbar-actions">

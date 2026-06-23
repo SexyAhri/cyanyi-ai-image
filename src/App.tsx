@@ -22,6 +22,7 @@ const MaskEditorModal = lazy(() => import('./components/MaskEditorModal'))
 const ImageContextMenu = lazy(() => import('./components/ImageContextMenu'))
 const SupportPromptModal = lazy(() => import('./components/SupportPromptModal'))
 const UtilityPanel = lazy(() => import('./components/UtilityPanel'))
+const VideoWorkspace = lazy(() => import('./components/VideoWorkspace'))
 const FavoriteCollectionsView = lazy(() => import('./components/FavoriteCollections').then((module) => ({ default: module.FavoriteCollectionsView })))
 const FavoriteCollectionPickerModal = lazy(() => import('./components/FavoriteCollections').then((module) => ({ default: module.FavoriteCollectionPickerModal })))
 const ManageCollectionsModal = lazy(() => import('./components/FavoriteCollections').then((module) => ({ default: module.ManageCollectionsModal })))
@@ -142,6 +143,12 @@ export default function App() {
     setAppMode('agent')
   }
 
+  const openVideo = () => {
+    setAppMode('video')
+    setActiveFavoriteCollectionId(null)
+    setFilterFavorite(false)
+  }
+
   const isGalleryView = appMode === 'gallery' && !filterFavorite
   const isFavoriteView = appMode === 'gallery' && filterFavorite
 
@@ -178,6 +185,15 @@ export default function App() {
               </span>
               Agent
             </button>
+            <button type="button" className={`cy-sidebar-link${appMode === 'video' ? ' cy-sidebar-link-active' : ''}`} onClick={openVideo} aria-current={appMode === 'video' ? 'page' : undefined}>
+              <span className="cy-sidebar-link-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect x="3" y="5" width="18" height="14" rx="3" />
+                  <path d="m10 9 5 3-5 3V9Z" />
+                </svg>
+              </span>
+              视频
+            </button>
             <button type="button" className={`cy-sidebar-link${isFavoriteView ? ' cy-sidebar-link-active' : ''}`} onClick={openFavorites} aria-current={isFavoriteView ? 'page' : undefined}>
               <span className="cy-sidebar-link-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill={isFavoriteView ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8">
@@ -206,16 +222,20 @@ export default function App() {
 
           <div className="cy-sidebar-card">
             <div className="cy-sidebar-card-label">当前视图</div>
-            <div className="cy-sidebar-card-value">{appMode === 'agent' ? 'Agent 工作台' : isFavoriteView ? '收藏' : '画廊'}</div>
-            <div className="cy-sidebar-card-meta">{appMode === 'agent' ? '对话式生图' : `任务 ${tasks.length}`}</div>
+            <div className="cy-sidebar-card-value">{appMode === 'agent' ? 'Agent 工作台' : appMode === 'video' ? '视频创作台' : isFavoriteView ? '收藏' : '画廊'}</div>
+            <div className="cy-sidebar-card-meta">{appMode === 'agent' ? '对话式生图' : appMode === 'video' ? '视频生成' : `任务 ${tasks.length}`}</div>
           </div>
         </aside>
 
         <div className="cy-workspace">
           <Header />
-          <main data-home-main data-drag-select-surface className={`cy-main${appMode === 'agent' ? ' cy-main-agent' : ''}`}>
+          <main data-home-main data-drag-select-surface className={`cy-main${appMode === 'agent' ? ' cy-main-agent' : ''}${appMode === 'video' ? ' cy-main-video' : ''}`}>
             {appMode === 'agent' ? (
               <AgentWorkspace />
+            ) : appMode === 'video' ? (
+              <Suspense fallback={null}>
+                <VideoWorkspace />
+              </Suspense>
             ) : (
               <section className="cy-content-panel">
                 <div className="cy-panel-heading" data-no-drag-select>
@@ -235,7 +255,7 @@ export default function App() {
           </main>
         </div>
       </div>
-      <InputBar />
+      {appMode !== 'video' && <InputBar />}
       <ConfirmDialog />
       <Toast />
       <Suspense fallback={null}>

@@ -93,6 +93,22 @@ function isEventStreamResponse(response: Response): boolean {
   return response.headers.get('Content-Type')?.toLowerCase().includes('text/event-stream') ?? false
 }
 
+function isJsonLikeResponse(response: Response): boolean {
+  const contentType = response.headers.get('Content-Type')?.toLowerCase() ?? ''
+  return contentType.includes('application/json') || contentType.includes('+json')
+}
+
+function isHtmlLikeResponse(response: Response): boolean {
+  return response.headers.get('Content-Type')?.toLowerCase().includes('text/html') ?? false
+}
+
+async function assertSupportedApiResponse(response: Response, expected: 'json' | 'stream-or-json') {
+  if (expected === 'stream-or-json' && isEventStreamResponse(response)) return
+  if (isJsonLikeResponse(response)) return
+  const contentType = response.headers.get('Content-Type')?.toLowerCase() ?? ''
+  if (isHtmlLikeResponse(response) || contentType) throw new Error(await getApiErrorMessage(response))
+}
+
 function isRecordValue(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
@@ -680,6 +696,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
       return parseImagesApiStreamResponse(response, mime, opts.onPartialImage)
     }
 
+    await assertSupportedApiResponse(response, profile.streamImages ? 'stream-or-json' : 'json')
     return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
   } finally {
     clearTimeout(timeoutId)
@@ -1087,6 +1104,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       return parseResponsesApiStreamResponse(response, mime, opts.onPartialImage)
     }
 
+    await assertSupportedApiResponse(response, profile.streamImages ? 'stream-or-json' : 'json')
     const payload = await response.json() as ResponsesApiResponse
     const imageResults = parseResponsesImageResults(payload, mime)
     const actualParams = mergeActualParams(

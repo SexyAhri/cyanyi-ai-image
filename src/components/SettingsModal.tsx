@@ -16,6 +16,7 @@ import {
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_RESPONSES_MODEL,
+  DEFAULT_VIDEOS_MODEL,
   DEFAULT_SETTINGS,
   findEquivalentApiProfile,
   getApiProviderLabel,
@@ -37,6 +38,8 @@ import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiP
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { DEFAULT_DROPDOWN_MAX_HEIGHT, getDropdownMaxHeight } from '../lib/dropdown'
+import { testVideoApiConnection } from '../lib/videoApi'
+import { testOpenAICompatibleConnection } from '../lib/apiConnection'
 import Select from './Select'
 import { Checkbox } from './Checkbox'
 import ViewportTooltip from './ViewportTooltip'
@@ -48,7 +51,7 @@ function newId(prefix: string) {
 
 const ADD_CUSTOM_PROVIDER_VALUE = '__add_custom_provider__'
 const COPY_IMPORT_URL_OPTIONS_STORAGE_KEY = 'gpt-image-playground.copy-import-url-options'
-type CallingFormat = 'openai-images' | 'openai-responses' | 'gemini' | 'grok' | 'custom'
+type CallingFormat = 'openai-images' | 'openai-responses' | 'openai-videos' | 'gemini' | 'grok' | 'custom'
 
 const DEFAULT_COPY_IMPORT_URL_OPTIONS = {
   includeApiKey: false,
@@ -344,6 +347,7 @@ export default function SettingsModal() {
   const [clearTasks, setClearTasks] = useState(true)
   const [isImportingData, setIsImportingData] = useState(false)
   const [isImportingJson, setIsImportingJson] = useState(false)
+  const [isTestingApi, setIsTestingApi] = useState(false)
   const [draggedProfileId, setDraggedProfileId] = useState<string | null>(null)
   const [dragOverProfileId, setDragOverProfileId] = useState<string | null>(null)
   const [dragDropPosition, setDragDropPosition] = useState<'before' | 'after' | null>(null)
@@ -383,6 +387,9 @@ export default function SettingsModal() {
   const agentImageRoutedProfile = draft.agentImageProfileId
     ? draft.profiles.find((profile) => profile.id === draft.agentImageProfileId)
     : null
+  const videoRoutedProfile = draft.videoProfileId
+    ? draft.profiles.find((profile) => profile.id === draft.videoProfileId)
+    : null
   const agentCompatibleProfiles = draft.profiles.filter(isAgentCompatibleApiProfile)
   const effectiveAgentProfile = agentRoutedProfile && isAgentCompatibleApiProfile(agentRoutedProfile)
     ? agentRoutedProfile
@@ -421,11 +428,12 @@ export default function SettingsModal() {
   ]
 
   const getDefaultModelForMode = (apiMode: AppSettings['apiMode']) =>
-    apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL
+    apiMode === 'videos' ? DEFAULT_VIDEOS_MODEL : apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL
 
   const getProfileUsageLabel = (profile: ApiProfile) => {
     if (profile.provider === 'gemini') return '图片生成 / Gemini'
     if (profile.provider === 'grok') return '图片生成 / Grok'
+    if (profile.provider === 'openai' && profile.apiMode === 'videos') return '视频生成 / Videos API'
     if (profile.provider === 'openai' && profile.apiMode === 'responses') return 'Agent / Responses API'
     if (profile.apiMode === 'images') return '图片生成 / Images API'
     return profile.apiMode
@@ -434,6 +442,7 @@ export default function SettingsModal() {
   const getCallingFormat = (profile: ApiProfile): CallingFormat => {
     if (profile.provider === 'gemini') return 'gemini'
     if (profile.provider === 'grok') return 'grok'
+    if (profile.provider === 'openai' && profile.apiMode === 'videos') return 'openai-videos'
     if (profile.provider === 'openai' && profile.apiMode === 'responses') return 'openai-responses'
     if (profile.provider === 'openai') return 'openai-images'
     return 'custom'
@@ -442,6 +451,7 @@ export default function SettingsModal() {
   const callingFormatOptions: Array<{ label: string; value: CallingFormat }> = [
     { label: 'OpenAI Images', value: 'openai-images' },
     { label: 'OpenAI Responses', value: 'openai-responses' },
+    { label: 'OpenAI Videos / 兼容视频接口', value: 'openai-videos' },
     { label: 'Gemini', value: 'gemini' },
     { label: 'Grok', value: 'grok' },
     { label: '自定义', value: 'custom' },
@@ -612,6 +622,9 @@ export default function SettingsModal() {
         : null,
       agentImageProfileId: normalizedProfiles.some((profile) => profile.id === nextDraft.agentImageProfileId)
         ? nextDraft.agentImageProfileId
+        : null,
+      videoProfileId: normalizedProfiles.some((profile) => profile.id === nextDraft.videoProfileId)
+        ? nextDraft.videoProfileId
         : null,
     })
     setDraft(normalizedDraft)
@@ -821,6 +834,28 @@ export default function SettingsModal() {
     setDraft(nextDraft)
     setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
     setShowProfileMenu(false)
+  }
+
+  const handleTestApiConnection = async () => {
+    setIsTestingApi(true)
+    try {
+      if (activeProfile.apiMode === 'videos') {
+        await testVideoApiConnection({
+          baseUrl: activeProfile.baseUrl,
+          apiKey: activeProfile.apiKey,
+        })
+      } else {
+        await testOpenAICompatibleConnection({
+          baseUrl: activeProfile.baseUrl,
+          apiKey: activeProfile.apiKey,
+        })
+      }
+      showToast(activeProfile.apiMode === 'videos' ? '视频接口连接正常' : '接口连接正常', 'success')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '接口连接测试失败', 'error')
+    } finally {
+      setIsTestingApi(false)
+    }
   }
 
   const createNewProfile = () => {
@@ -1073,7 +1108,7 @@ export default function SettingsModal() {
       return
     }
 
-    const apiMode: AppSettings['apiMode'] = format === 'openai-responses' ? 'responses' : 'images'
+    const apiMode: AppSettings['apiMode'] = format === 'openai-videos' ? 'videos' : format === 'openai-responses' ? 'responses' : 'images'
     const switchedProfile = activeProfile.provider === 'openai'
       ? activeProfile
       : switchApiProfileProvider(activeProfile, 'openai')
@@ -1082,6 +1117,7 @@ export default function SettingsModal() {
       !switchedProfile.model.trim()
       || switchedProfile.model === DEFAULT_IMAGES_MODEL
       || switchedProfile.model === DEFAULT_RESPONSES_MODEL
+      || switchedProfile.model === DEFAULT_VIDEOS_MODEL
       || switchedProfile.model === DEFAULT_GEMINI_MODEL
       || switchedProfile.model === DEFAULT_GROK_MODEL
       || switchedProfile.model === DEFAULT_FAL_MODEL
@@ -1090,7 +1126,7 @@ export default function SettingsModal() {
       ...switchedProfile,
       apiMode,
       model: shouldUseDefaultModel ? nextDefaultModel : switchedProfile.model,
-      streamImages: apiMode === 'responses' ? (switchedProfile.streamImages ?? true) : false,
+      streamImages: switchedProfile.streamImages ?? true,
     }, true)
   }
 
@@ -1622,7 +1658,7 @@ export default function SettingsModal() {
                   <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                     {draft.profiles.map(profile => {
                       const isActiveProfile = profile.id === activeProfile.id
-                      const canDeleteProfile = draft.profiles.length > 2 && profile.id !== draft.galleryProfileId && profile.id !== draft.agentProfileId
+                      const canDeleteProfile = draft.profiles.length > 2 && profile.id !== draft.galleryProfileId && profile.id !== draft.agentProfileId && profile.id !== draft.videoProfileId
                       return (
                         <div
                           key={profile.id}
@@ -1815,7 +1851,7 @@ export default function SettingsModal() {
                                   >
                                     <LinkIcon className="h-3.5 w-3.5" />
                                   </button>
-                                  {draft.profiles.length > 2 && profile.id !== draft.galleryProfileId && profile.id !== draft.agentProfileId && (
+                                  {draft.profiles.length > 2 && profile.id !== draft.galleryProfileId && profile.id !== draft.agentProfileId && profile.id !== draft.videoProfileId && (
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -1860,7 +1896,7 @@ export default function SettingsModal() {
                     可以让图片生成和 Agent 使用不同 API 配置/渠道；未指定时会跟随当前配置。
                   </div>
                 </div>
-                <div className="grid gap-2 lg:grid-cols-3">
+                <div className="grid gap-2 lg:grid-cols-4">
                   <label className="block">
                     <span className="mb-1 block text-xs text-blue-700 dark:text-blue-200">图片生成默认配置</span>
                     <Select
@@ -1925,6 +1961,29 @@ export default function SettingsModal() {
                     />
                     <div data-selectable-text className="mt-1 text-[11px] leading-4 text-blue-700/70 dark:text-blue-200/60">
                       Agent 大脑仍使用上面的 Responses 配置，实际出图可单独选择 Images、Gemini/banana 或自定义接口。
+                    </div>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs text-blue-700 dark:text-blue-200">视频生成配置</span>
+                    <Select
+                      value={videoRoutedProfile?.id ?? '__current__'}
+                      onChange={(value) => {
+                        commitSettings({
+                          ...draft,
+                          videoProfileId: value === '__current__' ? null : String(value),
+                        })
+                      }}
+                      options={[
+                        { label: `跟随当前配置（${activeProfile.name}）`, value: '__current__' },
+                        ...draft.profiles.map((profile) => ({
+                          label: `${profile.name} - ${getApiProviderLabel(draft, profile.provider)} - ${getProfileUsageLabel(profile)}`,
+                          value: profile.id,
+                        })),
+                      ]}
+                      className="w-full rounded-xl border border-blue-200/70 bg-white/80 px-3 py-2 text-xs text-gray-700 outline-none transition focus:border-blue-300 dark:border-blue-400/20 dark:bg-black/20 dark:text-gray-200"
+                    />
+                    <div data-selectable-text className="mt-1 text-[11px] leading-4 text-blue-700/70 dark:text-blue-200/60">
+                      视频创作台会优先使用这里选择的 Videos API / 兼容视频接口配置。
                     </div>
                   </label>
                 </div>
@@ -2109,8 +2168,24 @@ export default function SettingsModal() {
                 </div>
               </div>
 
+              {activeProviderUsesApiUrl && activeProfile.provider !== 'fal' && (
+                <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-3 dark:border-blue-400/20 dark:bg-blue-400/10">
+                  <div data-selectable-text className="text-xs leading-5 text-blue-800/80 dark:text-blue-100/80">
+                    只验证 Base URL 和 API Key 是否可访问模型列表，不会创建图片或视频任务。
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleTestApiConnection()}
+                    disabled={isTestingApi || !activeProfile.baseUrl.trim() || !activeProfile.apiKey.trim()}
+                    className="mt-2 w-full rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-blue-600"
+                  >
+                    {isTestingApi ? '测试中...' : activeProfile.apiMode === 'videos' ? '测试视频接口连接' : '测试生图接口连接'}
+                  </button>
+                </div>
+              )}
+
               {/* 8. 流式传输 + 中间步骤图像数 */}
-              {activeProfile.provider === 'openai' && (
+              {activeProfile.provider === 'openai' && activeProfile.apiMode !== 'videos' && (
                 <div className="block space-y-3">
                   <div>
                     <div className="mb-1.5 flex items-center justify-between gap-3">
@@ -2152,7 +2227,7 @@ export default function SettingsModal() {
               )}
 
               {/* 9. 返回 Base64 图片数据 */}
-              {activeProviderIsOpenAICompatible && (
+              {activeProviderIsOpenAICompatible && activeProfile.apiMode !== 'videos' && (
                 <div className="block">
                   <div className="mb-1.5 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">返回 Base64 图片数据</span>

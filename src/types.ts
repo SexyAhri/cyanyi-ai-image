@@ -1,7 +1,7 @@
 // ===== 设置 =====
 
-export type ApiMode = 'images' | 'responses'
-export type AppMode = 'gallery' | 'agent'
+export type ApiMode = 'images' | 'responses' | 'videos'
+export type AppMode = 'gallery' | 'agent' | 'video'
 export type ReferenceImageEditAction = 'ask' | 'replace-reference' | 'add-mask'
 export const ZIP_DOWNLOAD_ROUTE_VALUES = [
   'task-selection',
@@ -117,6 +117,7 @@ export interface AppSettings {
   galleryProfileId?: string | null
   agentProfileId?: string | null
   agentImageProfileId?: string | null
+  videoProfileId?: string | null
 }
 
 // ===== 任务参数 =====
@@ -259,6 +260,32 @@ export interface PromptTemplate {
   category?: string
   createdAt: number
   updatedAt: number
+}
+
+export interface VideoGenerationRecord {
+  id: string
+  createdAt: number
+  prompt: string
+  model: string
+  config: {
+    baseUrl: string
+    model: string
+    size: string
+    resolution: string
+    seconds: string
+  }
+  status: 'queued' | 'running' | 'success' | 'failed' | 'cancelled'
+  task?: {
+    id: string
+    model: string
+  }
+  video?: {
+    dataUrl?: string
+    remoteUrl?: string
+    mimeType: string
+    bytes: number
+  }
+  error?: string
 }
 
 export interface AgentDiagnosticLog {
@@ -454,6 +481,7 @@ export interface ExportData {
   exportedAt: string
   settings?: AppSettings
   tasks?: TaskRecord[]
+  videoRecords?: VideoGenerationRecord[]
   favoriteCollections?: FavoriteCollection[]
   defaultFavoriteCollectionId?: string | null
   promptTemplates?: PromptTemplate[]
@@ -472,5 +500,12 @@ export interface ExportData {
     width?: number
     height?: number
     thumbnailVersion?: number
+  }>
+  /** videoRecordId → 视频文件信息 */
+  videoFiles?: Record<string, {
+    path: string
+    mimeType?: string
+    bytes?: number
+    createdAt?: number
   }>
 }

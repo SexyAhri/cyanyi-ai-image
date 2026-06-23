@@ -6,6 +6,7 @@ import {
   DEFAULT_GROK_BASE_URL,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
+  DEFAULT_VIDEOS_MODEL,
   DEFAULT_SETTINGS,
   GOOGLE_GEMINI_BASE_URL,
   createDefaultOpenAIProfile,
@@ -14,6 +15,7 @@ import {
   getActiveApiProfile,
   getAgentApiProfile,
   getAgentImageApiProfile,
+  getVideoApiProfile,
   findEquivalentApiProfile,
   importCustomProviderDefinitionFromJson,
   importCustomProviderSettingsFromJson,
@@ -645,8 +647,9 @@ describe('custom providers', () => {
   })
 
   it('uses API-mode specific streaming defaults and preserves partial image count', () => {
-    expect(createDefaultOpenAIProfile().streamImages).toBe(false)
+    expect(createDefaultOpenAIProfile().streamImages).toBe(true)
     expect(createDefaultOpenAIProfile({ apiMode: 'responses' }).streamImages).toBe(true)
+    expect(createDefaultOpenAIProfile({ apiMode: 'videos' }).streamImages).toBe(true)
     expect(createDefaultOpenAIProfile().streamPartialImages).toBe(1)
     expect(DEFAULT_SETTINGS.streamImages).toBe(true)
     expect(DEFAULT_SETTINGS.streamPartialImages).toBe(1)
@@ -775,6 +778,43 @@ describe('custom providers', () => {
     })
     expect(fallback.agentImageProfileId).toBeNull()
     expect(getAgentImageApiProfile(fallback).id).toBe(agentProfile.id)
+  })
+
+  it('routes video generation to the selected Videos profile', () => {
+    const galleryProfile = createDefaultOpenAIProfile({
+      id: 'gallery-images',
+      name: 'Gallery Images',
+      apiKey: 'gallery-key',
+      apiMode: 'images',
+      model: 'gallery-model',
+    })
+    const videoProfile = createDefaultOpenAIProfile({
+      id: 'video-openai',
+      name: 'Video',
+      apiKey: 'video-key',
+      apiMode: 'videos',
+    })
+    const settings = normalizeSettings({
+      profiles: [galleryProfile, videoProfile],
+      activeProfileId: galleryProfile.id,
+      videoProfileId: videoProfile.id,
+    })
+
+    expect(videoProfile.model).toBe(DEFAULT_VIDEOS_MODEL)
+    expect(settings.videoProfileId).toBe(videoProfile.id)
+    expect(getVideoApiProfile(settings)).toMatchObject({
+      id: videoProfile.id,
+      apiMode: 'videos',
+      model: DEFAULT_VIDEOS_MODEL,
+    })
+
+    const fallback = normalizeSettings({
+      profiles: [galleryProfile, videoProfile],
+      activeProfileId: galleryProfile.id,
+      videoProfileId: 'missing-profile',
+    })
+    expect(fallback.videoProfileId).toBeNull()
+    expect(getVideoApiProfile(fallback).id).toBe(videoProfile.id)
   })
 
   it('ignores non-Responses profiles saved as the Agent brain route', () => {

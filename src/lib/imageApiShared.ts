@@ -193,7 +193,7 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
   const normalized = errorMsg.trim()
   if (/<!doctype html/i.test(normalized) || /<html[\s>]/i.test(normalized)) {
     if (response.status === 524 || response.status === 522 || response.status === 520) {
-      return `网关超时或源站连接异常（HTTP ${response.status}）。如果前面挂了 Cloudflare/CDN/反代，请优先检查反代超时和源站连通性。`
+      return `网关超时或源站连接异常（HTTP ${response.status}）。同步 Images 请求可能已在上游完成并扣费，但中间代理超时导致结果无法返回；请检查 Cloudflare/CDN/反代超时，或改用支持流式/异步结果的接口。`
     }
     if (response.status >= 500) {
       return `服务端返回了 HTML 错误页（HTTP ${response.status}），通常是反向代理、CDN 或网关错误，不是正常的 JSON API 响应。`

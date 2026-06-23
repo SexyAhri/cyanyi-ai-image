@@ -1,11 +1,12 @@
-import type { AgentConversation, TaskRecord, StoredImage, StoredImageThumbnail } from '../types'
+import type { AgentConversation, TaskRecord, StoredImage, StoredImageThumbnail, VideoGenerationRecord } from '../types'
 
 const DB_NAME = 'gpt-image-playground'
-const DB_VERSION = 3
+const DB_VERSION = 4
 const STORE_TASKS = 'tasks'
 const STORE_IMAGES = 'images'
 const STORE_THUMBNAILS = 'thumbnails'
 const STORE_AGENT_CONVERSATIONS = 'agentConversations'
+const STORE_VIDEO_RECORDS = 'videoRecords'
 const THUMBNAIL_MAX_SIZE = 720
 const THUMBNAIL_QUALITY = 0.9
 const THUMBNAIL_VERSION = 2
@@ -28,6 +29,9 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_AGENT_CONVERSATIONS)) {
         db.createObjectStore(STORE_AGENT_CONVERSATIONS, { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains(STORE_VIDEO_RECORDS)) {
+        db.createObjectStore(STORE_VIDEO_RECORDS, { keyPath: 'id' })
       }
     }
     req.onsuccess = () => resolve(req.result)
@@ -68,6 +72,39 @@ export function deleteTask(id: string): Promise<undefined> {
 
 export function clearTasks(): Promise<undefined> {
   return dbTransaction(STORE_TASKS, 'readwrite', (s) => s.clear())
+}
+
+// ===== Video records =====
+
+export function getAllVideoRecords(): Promise<VideoGenerationRecord[]> {
+  return dbTransaction(STORE_VIDEO_RECORDS, 'readonly', (s) => s.getAll())
+}
+
+export function putVideoRecord(record: VideoGenerationRecord): Promise<IDBValidKey> {
+  return dbTransaction(STORE_VIDEO_RECORDS, 'readwrite', (s) => s.put(record))
+}
+
+export function deleteVideoRecord(id: string): Promise<undefined> {
+  return dbTransaction(STORE_VIDEO_RECORDS, 'readwrite', (s) => s.delete(id))
+}
+
+export function clearVideoRecords(): Promise<undefined> {
+  return dbTransaction(STORE_VIDEO_RECORDS, 'readwrite', (s) => s.clear())
+}
+
+export function replaceVideoRecords(records: VideoGenerationRecord[]): Promise<undefined> {
+  return openDB().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_VIDEO_RECORDS, 'readwrite')
+        const store = tx.objectStore(STORE_VIDEO_RECORDS)
+        store.clear()
+        for (const record of records) store.put(record)
+        tx.oncomplete = () => resolve(undefined)
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      }),
+  )
 }
 
 // ===== Agent conversations =====
