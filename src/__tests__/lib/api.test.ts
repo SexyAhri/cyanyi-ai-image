@@ -548,6 +548,46 @@ describe('callImageApi', () => {
     })
   })
 
+  it('resolves Images API streamed completed URL results', async () => {
+    const imageUrl = 'https://oss.filenest.top/uploads/result.png'
+    const streamBody = [
+      `data: {"created_at":178230610,"type":"image_generation.completed","url":"${imageUrl}","size":"2560x1440","quality":"auto","output_format":"png"}`,
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(streamBody, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }))
+      .mockResolvedValueOnce(new Response(new Blob([Uint8Array.from([105, 109, 97, 103, 101])], { type: 'image/png' }), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      }))
+
+    const result = await callImageApi({
+      settings: withOpenAIProfile({
+        apiKey: 'test-key',
+        apiMode: 'images',
+        streamImages: true,
+      }),
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, size: '2560x1440' },
+      inputImageDataUrls: [],
+    } as any)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[1][0]).toBe(imageUrl)
+    expect(result.images).toEqual(['data:image/png;base64,aW1hZ2U='])
+    expect(result.rawImageUrls).toEqual([imageUrl])
+    expect(result.actualParams).toMatchObject({
+      output_format: 'png',
+      quality: 'auto',
+      size: '2560x1440',
+    })
+  })
+
   it('suggests disabling streaming when a streaming request fails', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('invalid character \':\' looking for beginning of value', {
       status: 400,

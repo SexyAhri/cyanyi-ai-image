@@ -17,6 +17,9 @@ import type { SubmitTaskOptions } from "./gallerySubmissionActions";
 
 type GalleryRecordDependencies = {
   getState: () => AppState;
+  setState: (
+    patch: Partial<AppState> | ((state: AppState) => Partial<AppState>),
+  ) => void;
   putTask: (task: TaskRecord) => Promise<IDBValidKey>;
   deleteTask: (taskId: string) => Promise<void>;
   deleteImage: (imageId: string) => Promise<void>;
@@ -41,9 +44,57 @@ export async function retryTaskAction(
 
   const latestTasks = deps.getState().tasks;
   deps.getState().setTasks([newTask, ...latestTasks]);
+  attachRetriedTaskToAgentConversation(deps, task, newTask);
   await deps.putTask(newTask);
 
   deps.executeTask(newTask.id);
+}
+
+function attachRetriedTaskToAgentConversation(
+  deps: GalleryRecordDependencies,
+  originalTask: TaskRecord,
+  retryTask: TaskRecord,
+) {
+  const conversationId =
+    retryTask.agentConversationId ?? originalTask.agentConversationId;
+  const roundId = retryTask.agentRoundId ?? originalTask.agentRoundId;
+  if (!conversationId || !roundId) return;
+
+  const messageId = retryTask.agentMessageId ?? originalTask.agentMessageId;
+  deps.setState((state) => {
+    let changed = false;
+    const nextConversations = state.agentConversations.map((conversation) => {
+      if (conversation.id !== conversationId) return conversation;
+
+      changed = true;
+      return {
+        ...conversation,
+        updatedAt: Date.now(),
+        rounds: conversation.rounds.map((round) =>
+          round.id === roundId
+            ? {
+                ...round,
+                outputTaskIds: round.outputTaskIds.includes(retryTask.id)
+                  ? round.outputTaskIds
+                  : [...round.outputTaskIds, retryTask.id],
+              }
+            : round,
+        ),
+        messages: conversation.messages.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                outputTaskIds: [
+                  ...new Set([...(message.outputTaskIds ?? []), retryTask.id]),
+                ],
+              }
+            : message,
+        ),
+      };
+    });
+
+    return changed ? { agentConversations: nextConversations } : {};
+  });
 }
 
 export async function retryMultipleTasksAction(

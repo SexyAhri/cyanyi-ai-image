@@ -74,6 +74,7 @@ const AGENT_CONTEXT_REQUEST_HARD_LIMIT_BYTES = 4_800_000;
 const AGENT_CONTEXT_MAX_IMAGE_BYTES_DEFAULT = 700_000;
 const AGENT_CONTEXT_MAX_IMAGE_BYTES_TIGHT = 260_000;
 const AGENT_TEMPORARY_ERROR_RETRY_DELAYS_MS = [2_000, 6_000] as const;
+const AGENT_MAX_CONSECUTIVE_IMAGE_TOOL_FAILURE_ROUNDS = 2;
 const agentRoundControllers = new Map<string, AbortController>();
 const AGENT_CONVERSATION_TITLE_MAX_LENGTH = 28;
 
@@ -1048,6 +1049,8 @@ async function executeAgentRound(
     let lastResponseId: string | undefined;
     let toolCallsUsed = 0;
     let reachedToolLimit = false;
+    let reachedImageToolFailureLimit = false;
+    let consecutiveImageToolFailureRounds = 0;
     let pendingToolTextSeparator = false;
 
     // Helper: resolve reference image ids to data URLs for batch image calls
@@ -1152,6 +1155,8 @@ async function executeAgentRound(
           : undefined,
       });
 
+      toolCallsUsed += 1;
+
       if (result.image && !shouldStreamImagePreviews) {
         await completeAgentImageTask(
           { ...result.image, toolCallId },
@@ -1165,8 +1170,9 @@ async function executeAgentRound(
           result.error ?? "接口未返回图片数据",
           result.rawResponsePayload,
         );
+        consecutiveImageToolFailureRounds += 1;
       } else {
-        toolCallsUsed += 1;
+        consecutiveImageToolFailureRounds = 0;
       }
 
       return JSON.stringify({
@@ -1314,7 +1320,12 @@ async function executeAgentRound(
       const successCount = outputImages.filter(
         (img) => img.status === "done",
       ).length;
-      toolCallsUsed += successCount;
+      toolCallsUsed += batchItems.length;
+      if (successCount === 0) {
+        consecutiveImageToolFailureRounds += 1;
+      } else {
+        consecutiveImageToolFailureRounds = 0;
+      }
 
       return JSON.stringify({ images: outputImages });
     };
@@ -1705,8 +1716,16 @@ async function executeAgentRound(
                 responseOutput: accumulatedOutputItemsWithFunctionOutputs,
               }
             : item,
-        ),
+          ),
       }));
+
+      if (
+        consecutiveImageToolFailureRounds >=
+        AGENT_MAX_CONSECUTIVE_IMAGE_TOOL_FAILURE_ROUNDS
+      ) {
+        reachedImageToolFailureLimit = true;
+        break;
+      }
 
       if (toolCallsUsed >= maxToolCalls) {
         reachedToolLimit = true;
@@ -1773,9 +1792,16 @@ async function executeAgentRound(
         deps.getState().tasks.find((task) => task.id === taskId)
           ?.outputImages ?? [],
     );
-    const limitNotice = reachedToolLimit
-      ? `已达到最大工具调用次数（${maxToolCalls}），已停止自动续跑。`
-      : "";
+    const limitNotice = [
+      reachedToolLimit
+        ? `已达到最大工具调用次数（${maxToolCalls}），已停止自动续跑。`
+        : "",
+      reachedImageToolFailureLimit
+        ? "连续生图失败，已停止自动重试。请检查模型、API 配置或降低尺寸后手动重试。"
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
     const joinedText = textSegments.join("\n\n").trim();
     const finalContent =
       [joinedText, limitNotice]

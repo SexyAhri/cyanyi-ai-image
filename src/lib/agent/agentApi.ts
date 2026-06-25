@@ -1,7 +1,7 @@
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../../types'
 import { callImageApi } from '../api/api'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from '../api/devProxy'
-import { appendStreamingFormatHint, maybeAppendStreamingHint, getApiErrorMessage, getMimeForActualParams, MIME_MAP, normalizeBase64Image, pickActualParams } from '../api/imageApiShared'
+import { appendStreamingFormatHint, maybeAppendStreamingHint, fetchImageUrlAsDataUrl, getApiErrorMessage, getMimeForActualParams, isDataUrl, isHttpUrl, MIME_MAP, normalizeBase64Image, pickActualParams } from '../api/imageApiShared'
 import { applyPromptStyleLock, createAgentPromptStyleLockInstruction } from '../gallery/promptStyleLock'
 
 export interface AgentApiResultImage {
@@ -462,56 +462,8 @@ function parseAgentConversationTitleXml(text: string) {
   return `${chars.slice(0, AGENT_TITLE_MAX_LENGTH - 3).join('')}...`
 }
 
-function extractImages(payload: ResponsesApiResponse, fallbackMime: string): AgentApiResultImage[] {
-  const images: AgentApiResultImage[] = []
-
-  for (const item of payload.output ?? []) {
-    if (item.type !== 'image_generation_call') continue
-
-    const result = item.result
-    if (typeof result === 'string' && result.trim()) {
-      const actualParams = pickActualParams(item)
-      images.push({
-        toolCallId: typeof item.id === 'string' ? item.id : undefined,
-        action: typeof item.action === 'string' ? item.action : undefined,
-        dataUrl: normalizeBase64Image(result, getMimeForActualParams(actualParams, fallbackMime)),
-        actualParams,
-        revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
-      })
-      continue
-    }
-
-    if (result && typeof result === 'object') {
-      const b64 = typeof result.b64_json === 'string'
-        ? result.b64_json
-        : typeof result.base64 === 'string'
-        ? result.base64
-        : typeof result.image === 'string'
-        ? result.image
-        : typeof result.data === 'string'
-        ? result.data
-        : ''
-      if (b64.trim()) {
-        const actualParams = pickActualParams(item)
-        images.push({
-          toolCallId: typeof item.id === 'string' ? item.id : undefined,
-          action: typeof item.action === 'string' ? item.action : undefined,
-          dataUrl: normalizeBase64Image(b64, getMimeForActualParams(actualParams, fallbackMime)),
-          actualParams,
-          revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
-        })
-      }
-    }
-  }
-
-  return images
-}
-
-function extractImageFromOutputItem(item: ResponsesOutputItem, fallbackMime: string): AgentApiResultImage | null {
-  if (item.type !== 'image_generation_call') return null
-
-  const result = item.result
-  const b64 = typeof result === 'string'
+function getImageResultValue(result: ResponsesOutputItem['result']): string | undefined {
+  const value = typeof result === 'string'
     ? result
     : result && typeof result === 'object'
     ? typeof result.b64_json === 'string'
@@ -522,18 +474,45 @@ function extractImageFromOutputItem(item: ResponsesOutputItem, fallbackMime: str
       ? result.image
       : typeof result.data === 'string'
       ? result.data
+      : typeof result.url === 'string'
+      ? result.url
       : ''
     : ''
 
-  if (!b64.trim()) return null
+  return value.trim() ? value : undefined
+}
+
+async function createAgentImageFromOutputItem(
+  item: ResponsesOutputItem,
+  fallbackMime: string,
+  signal?: AbortSignal,
+): Promise<AgentApiResultImage | null> {
+  if (item.type !== 'image_generation_call') return null
+
+  const value = getImageResultValue(item.result)
+  if (!value) return null
   const actualParams = pickActualParams(item)
+  const itemMime = getMimeForActualParams(actualParams, fallbackMime)
   return {
     toolCallId: typeof item.id === 'string' ? item.id : undefined,
     action: typeof item.action === 'string' ? item.action : undefined,
-    dataUrl: normalizeBase64Image(b64, getMimeForActualParams(actualParams, fallbackMime)),
+    dataUrl: isHttpUrl(value) || isDataUrl(value)
+      ? await fetchImageUrlAsDataUrl(value, itemMime, signal)
+      : normalizeBase64Image(value, itemMime),
     actualParams,
     revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
   }
+}
+
+async function extractImages(payload: ResponsesApiResponse, fallbackMime: string, signal?: AbortSignal): Promise<AgentApiResultImage[]> {
+  const images: AgentApiResultImage[] = []
+
+  for (const item of payload.output ?? []) {
+    const image = await createAgentImageFromOutputItem(item, fallbackMime, signal)
+    if (image) images.push(image)
+  }
+
+  return images
 }
 
 function getStreamResponsePayload(event: Record<string, unknown>): ResponsesApiResponse | null {
@@ -674,7 +653,7 @@ async function parseAgentStreamResponse(
         return
       }
 
-      const image = item ? extractImageFromOutputItem(item, mime) : null
+      const image = item ? await createAgentImageFromOutputItem(item, mime, signal) : null
       if (image) await onImageToolCompleted?.(image)
       return
     }
@@ -692,7 +671,7 @@ async function parseAgentStreamResponse(
   return {
     responseId: payload.id,
     text,
-    images: extractImages(payload, mime),
+    images: await extractImages(payload, mime, signal),
     outputItems: payload.output ?? [],
     rawResponsePayload: JSON.stringify(payload, null, 2),
   }
@@ -756,7 +735,7 @@ export async function callAgentResponsesApi(opts: {
     return {
       responseId: payload.id,
       text: extractText(payload),
-      images: extractImages(payload, mime),
+      images: await extractImages(payload, mime, controller.signal),
       outputItems: payload.output,
       rawResponsePayload: JSON.stringify(payload, null, 2),
     }
@@ -1042,7 +1021,7 @@ export async function callBatchImageSingle(opts: {
           const payload = getStreamResponsePayload(event)
           const item = payload?.output?.[0]
           if (item) {
-            const img = extractImageFromOutputItem(item, mime)
+            const img = await createAgentImageFromOutputItem(item, mime, controller.signal)
             if (img) {
               completedImage = img
               await onImageToolCompleted?.(img)
@@ -1055,7 +1034,7 @@ export async function callBatchImageSingle(opts: {
           const payload = getStreamResponsePayload(event)
           if (payload) rawPayload = JSON.stringify(payload, null, 2)
           if (!completedImage && payload) {
-            const images = extractImages(payload, mime)
+            const images = await extractImages(payload, mime, controller.signal)
             if (images.length > 0) {
               completedImage = images[0]
               await onImageToolCompleted?.(completedImage)
@@ -1074,7 +1053,7 @@ export async function callBatchImageSingle(opts: {
 
     // Non-streaming
     const payload = await response.json() as ResponsesApiResponse
-    const images = extractImages(payload, mime)
+    const images = await extractImages(payload, mime, controller.signal)
     const image = images[0] ?? null
     if (image) await onImageToolCompleted?.(image)
     return {

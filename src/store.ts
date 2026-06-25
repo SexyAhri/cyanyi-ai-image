@@ -715,6 +715,7 @@ export async function deleteFavoriteCollection(
 function getGalleryRecordDependencies() {
   return {
     getState: useStore.getState,
+    setState: useStore.setState,
     putTask,
     deleteTask: dbDeleteTask,
     deleteImage,

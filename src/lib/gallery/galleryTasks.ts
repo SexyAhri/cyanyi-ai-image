@@ -152,6 +152,18 @@ export function createRetryTaskRecord(
   const transparentMeta = taskParams.transparent_output
     ? createTransparentOutputMeta(effectivePrompt)
     : null;
+  const agentMeta =
+    task.sourceMode === "agent" || task.agentConversationId || task.agentRoundId
+      ? {
+          sourceMode: "agent" as const,
+          agentConversationId: task.agentConversationId,
+          agentRoundId: task.agentRoundId,
+          agentMessageId: task.agentMessageId,
+          agentToolCallId: task.agentToolCallId,
+          agentBatchCallId: task.agentBatchCallId,
+          agentToolAction: task.agentToolAction,
+        }
+      : {};
 
   return {
     id: genId(),
@@ -174,6 +186,7 @@ export function createRetryTaskRecord(
     createdAt: now,
     finishedAt: null,
     elapsed: null,
+    ...agentMeta,
   };
 }
 

@@ -99,6 +99,15 @@ vi.mock('../lib/agent/agentApi', () => ({
     image: { dataUrl: 'data:image/png;base64,batch-output', revisedPrompt: opts.prompt },
     error: null,
   })),
+  parseSingleImageCallArguments: vi.fn((args: string) => {
+    try {
+      const parsed = JSON.parse(args) as { prompt?: string }
+      const prompt = typeof parsed.prompt === 'string' ? parsed.prompt.trim() : ''
+      return prompt ? { prompt } : null
+    } catch {
+      return null
+    }
+  }),
   parseBatchImageCallArguments: vi.fn((args: string) => {
     try {
       const parsed = JSON.parse(args) as { images?: Array<{ id?: string; prompt?: string }> }
@@ -114,7 +123,7 @@ vi.mock('../lib/agent/agentApi', () => ({
 import { clearAgentConversations, clearImages, clearTasks, getAllAgentConversations, getAllTasks, getImage, putAgentConversation, putImage, putTask as putDbTask } from '../lib/storage/db'
 import { callAgentResponsesApi, callBatchImageSingle } from '../lib/agent/agentApi'
 import { removeKeyedBackgroundFromDataUrl } from '../lib/gallery/transparentImage'
-import { cleanStaleAgentInputDrafts, clearData, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, sanitizeProviderErrorMessage, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from '../store'
+import { cleanStaleAgentInputDrafts, clearData, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, retryTask, reuseConfig, sanitizeProviderErrorMessage, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from '../store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -1983,6 +1992,71 @@ describe('agent built-in image tool failure', () => {
     })
   })
 
+  it('keeps retried Agent image tasks attached to the original round and message', async () => {
+    const { callImageApi } = await import('../lib/api/api')
+    vi.mocked(callImageApi).mockImplementationOnce(() => new Promise(() => {}))
+    const failedTask = task({
+      id: 'agent-failed-task',
+      prompt: '鐢讳竴寮犵尗',
+      status: 'error',
+      error: 'upstream failed',
+      sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
+      agentRoundId: 'round-a',
+      agentMessageId: 'assistant-a',
+      agentToolCallId: 'tool-call-a',
+      agentToolAction: 'generate',
+    })
+
+    useStore.setState({
+      tasks: [failedTask],
+      agentConversations: [agentConversation({
+        id: 'conversation-a',
+        activeRoundId: 'round-a',
+        rounds: [{
+          id: 'round-a',
+          index: 1,
+          userMessageId: 'user-a',
+          assistantMessageId: 'assistant-a',
+          prompt: failedTask.prompt,
+          inputImageIds: [],
+          outputTaskIds: [failedTask.id],
+          status: 'error',
+          error: failedTask.error,
+          createdAt: 1,
+          finishedAt: 2,
+        }],
+        messages: [
+          { id: 'user-a', role: 'user', content: failedTask.prompt, roundId: 'round-a', createdAt: 1 },
+          { id: 'assistant-a', role: 'assistant', content: '鐢熷浘澶辫触', roundId: 'round-a', outputTaskIds: [failedTask.id], createdAt: 2 },
+        ],
+      })],
+    })
+
+    await retryTask(failedTask)
+
+    const state = useStore.getState()
+    const retriedTask = state.tasks[0]
+    expect(retriedTask.id).not.toBe(failedTask.id)
+    expect(retriedTask).toMatchObject({
+      status: 'running',
+      sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
+      agentRoundId: 'round-a',
+      agentMessageId: 'assistant-a',
+      agentToolCallId: 'tool-call-a',
+      parentTaskId: failedTask.id,
+    })
+    expect(state.agentConversations[0].rounds[0].outputTaskIds).toEqual([
+      failedTask.id,
+      retriedTask.id,
+    ])
+    expect(state.agentConversations[0].messages[1].outputTaskIds).toEqual([
+      failedTask.id,
+      retriedTask.id,
+    ])
+  })
+
   it('marks a started built-in image task as error when the stream fails', async () => {
     vi.mocked(callAgentResponsesApi).mockImplementationOnce(async (opts) => {
       await opts.onImageToolStarted?.({ toolCallId: 'ig-fail' })
@@ -2062,6 +2136,43 @@ describe('agent built-in image tool failure', () => {
       content: '图片失败，但回复继续。',
       outputTaskIds: [failedTask.id],
     })
+  })
+
+  it('stops Agent continuation after repeated image tool failures', async () => {
+    vi.mocked(callAgentResponsesApi).mockImplementation(async () => ({
+      text: '',
+      images: [],
+      outputItems: [
+        {
+          type: 'function_call',
+          name: 'generate_image',
+          call_id: `image-fc-${vi.mocked(callAgentResponsesApi).mock.calls.length}`,
+          arguments: JSON.stringify({ prompt: 'test image' }),
+        },
+      ],
+      responseId: `response-${vi.mocked(callAgentResponsesApi).mock.calls.length}`,
+    }))
+    vi.mocked(callBatchImageSingle).mockClear()
+    vi.mocked(callBatchImageSingle).mockResolvedValue({
+      batchItemId: 'image',
+      image: null,
+      error: 'upstream failed',
+    })
+
+    await submitAgentMessage()
+    for (let i = 0; i < 20 && useStore.getState().agentConversations[0].rounds[0]?.status !== 'done'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    const state = useStore.getState()
+    expect(callBatchImageSingle).toHaveBeenCalledTimes(2)
+    expect(callAgentResponsesApi).toHaveBeenCalledTimes(2)
+    expect(state.agentConversations[0].rounds[0]).toMatchObject({
+      status: 'done',
+      error: null,
+    })
+    expect(state.agentConversations[0].messages.find((message) => message.role === 'assistant')?.content)
+      .toContain('API')
   })
 })
 
