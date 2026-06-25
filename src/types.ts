@@ -13,7 +13,7 @@ export const ZIP_DOWNLOAD_ROUTE_VALUES = [
 ] as const
 export type ZipDownloadRoute = typeof ZIP_DOWNLOAD_ROUTE_VALUES[number]
 export const DEFAULT_ZIP_DOWNLOAD_ROUTES: ZipDownloadRoute[] = ['task-selection', 'favorite-collection-selection']
-export type BuiltInApiProvider = 'openai' | 'fal' | 'gemini' | 'grok'
+export type BuiltInApiProvider = 'openai' | 'gemini' | 'grok'
 export type ApiProvider = BuiltInApiProvider | string
 export type CustomProviderTemplate = 'http-image'
 export const DEFAULT_STREAM_PARTIAL_IMAGES = 1
@@ -112,6 +112,8 @@ export interface AppSettings {
   agentMathFormattingPrompt: boolean
   queuePaused: boolean
   queueMaxConcurrency: number
+  promptStyleLockEnabled: boolean
+  promptStyleLockText: string
   profiles: ApiProfile[]
   activeProfileId: string
   galleryProfileId?: string | null
@@ -133,7 +135,7 @@ export interface TaskParams {
 }
 
 export const DEFAULT_PARAMS: TaskParams = {
-  size: '1280x720',
+  size: '2560x1440',
   quality: 'high',
   output_format: 'jpeg',
   output_compression: null,
@@ -240,6 +242,9 @@ export interface TaskRecord {
   /** Agent 图像工具实际动作 */
   agentToolAction?: 'generate' | 'edit' | 'auto' | string
   parentTaskId?: string
+  seriesBatchId?: string
+  seriesBatchLabel?: string
+  comparedWithTaskIds?: string[]
   queued?: boolean
   autoRetryCount?: number
   autoRetryNextAt?: number
@@ -261,6 +266,43 @@ export interface PromptTemplate {
   createdAt: number
   updatedAt: number
 }
+
+export interface CreativeStylePreset {
+  id: string
+  title: string
+  content: string
+  tags?: string[]
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CreativeSubjectProfile {
+  id: string
+  name: string
+  description: string
+  negativePrompt?: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CreativeNegativePreset {
+  id: string
+  title: string
+  content: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface SeriesReferenceImage {
+  id: string
+  dataUrl: string
+  sourceTaskId?: string
+  label?: string
+  purpose?: 'person' | 'product' | 'style' | 'composition' | 'reference'
+  createdAt: number
+}
+
+export type SeriesReferenceSlot = 'person' | 'product' | 'style'
 
 export interface VideoGenerationRecord {
   id: string
@@ -455,24 +497,6 @@ export interface ResponsesApiResponse {
   }>
 }
 
-export interface FalImageFile {
-  url?: string
-  content_type?: string
-  file_name?: string
-  width?: number
-  height?: number
-  b64_json?: string
-  base64?: string
-  data?: string
-}
-
-export interface FalApiResponse {
-  images?: FalImageFile[]
-  image?: FalImageFile | string
-  url?: string
-  seed?: number
-}
-
 // ===== 导出数据 =====
 
 /** ZIP manifest.json 格式 */
@@ -485,6 +509,9 @@ export interface ExportData {
   favoriteCollections?: FavoriteCollection[]
   defaultFavoriteCollectionId?: string | null
   promptTemplates?: PromptTemplate[]
+  creativeStylePresets?: CreativeStylePreset[]
+  creativeSubjectProfiles?: CreativeSubjectProfile[]
+  creativeNegativePresets?: CreativeNegativePreset[]
   agentConversations?: AgentConversation[]
   /** imageId → 图片信息 */
   imageFiles?: Record<string, {

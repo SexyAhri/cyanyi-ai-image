@@ -1,31 +1,32 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { initStore, useStore } from './store'
-import { activateFirstImportedProfile, buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
-import { isDefaultConfigOnlyEnabled, mergeImportedSettings } from './lib/apiProfiles'
-import { getCustomProviderConfigUrl, loadCustomProviderSettingsFromUrl } from './lib/customProviderConfigUrl'
+import { activateFirstImportedProfile, buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/api/urlSettings'
+import { isDefaultConfigOnlyEnabled, mergeImportedSettings } from './lib/api/apiProfiles'
+import { getCustomProviderConfigUrl, loadCustomProviderSettingsFromUrl } from './lib/api/customProviderConfigUrl'
 import type { AppSettings } from './types'
-import Header from './components/Header'
-import SearchBar from './components/SearchBar'
-import TaskGrid from './components/TaskGrid'
-import InputBar from './components/InputBar'
-import ConfirmDialog from './components/ConfirmDialog'
-import Toast from './components/Toast'
-import AgentWorkspace from './components/AgentWorkspace'
-import { useGlobalClickSuppression } from './lib/clickSuppression'
+import Header from './components/layout/Header'
+import SearchBar from './components/gallery/SearchBar'
+import TaskGrid from './components/gallery/TaskGrid'
+import InputBar from './components/input/InputBar'
+import ConfirmDialog from './components/common/ConfirmDialog'
+import Toast from './components/common/Toast'
+import AgentWorkspace from './components/agent/AgentWorkspace'
+import { useGlobalClickSuppression } from './lib/ui/clickSuppression'
 
 let customProviderConfigUrlImportStarted = false
 const LOGO_URL = 'https://img.icons8.com/?size=100&id=eoxMN35Z6JKg&format=png&color=000000'
-const DetailModal = lazy(() => import('./components/DetailModal'))
-const Lightbox = lazy(() => import('./components/Lightbox'))
-const SettingsModal = lazy(() => import('./components/SettingsModal'))
-const MaskEditorModal = lazy(() => import('./components/MaskEditorModal'))
-const ImageContextMenu = lazy(() => import('./components/ImageContextMenu'))
-const SupportPromptModal = lazy(() => import('./components/SupportPromptModal'))
-const UtilityPanel = lazy(() => import('./components/UtilityPanel'))
-const VideoWorkspace = lazy(() => import('./components/VideoWorkspace'))
-const FavoriteCollectionsView = lazy(() => import('./components/FavoriteCollections').then((module) => ({ default: module.FavoriteCollectionsView })))
-const FavoriteCollectionPickerModal = lazy(() => import('./components/FavoriteCollections').then((module) => ({ default: module.FavoriteCollectionPickerModal })))
-const ManageCollectionsModal = lazy(() => import('./components/FavoriteCollections').then((module) => ({ default: module.ManageCollectionsModal })))
+const DetailModal = lazy(() => import('./components/gallery/DetailModal'))
+const Lightbox = lazy(() => import('./components/gallery/Lightbox'))
+const SettingsModal = lazy(() => import('./components/settings/SettingsModal'))
+const MaskEditorModal = lazy(() => import('./components/gallery/MaskEditorModal'))
+const ImageContextMenu = lazy(() => import('./components/gallery/ImageContextMenu'))
+const SupportPromptModal = lazy(() => import('./components/common/SupportPromptModal'))
+const UtilityPanel = lazy(() => import('./components/tools/UtilityPanel'))
+const CreativeAssetsModal = lazy(() => import('./components/settings/CreativeAssetsModal'))
+const VideoWorkspace = lazy(() => import('./components/video/VideoWorkspace'))
+const FavoriteCollectionsView = lazy(() => import('./components/favorites/FavoriteCollections').then((module) => ({ default: module.FavoriteCollectionsView })))
+const FavoriteCollectionPickerModal = lazy(() => import('./components/favorites/FavoriteCollections').then((module) => ({ default: module.FavoriteCollectionPickerModal })))
+const ManageCollectionsModal = lazy(() => import('./components/favorites/FavoriteCollections').then((module) => ({ default: module.ManageCollectionsModal })))
 
 function ImageContextMenuLoader() {
   const [ready, setReady] = useState(false)
@@ -54,6 +55,8 @@ export default function App() {
   const showSettings = useStore((s) => s.showSettings)
   const supportPromptOpen = useStore((s) => s.supportPromptOpen)
   const utilityPanelOpen = useStore((s) => s.utilityPanelOpen)
+  const creativeAssetsOpen = useStore((s) => s.creativeAssetsOpen)
+  const setCreativeAssetsOpen = useStore((s) => s.setCreativeAssetsOpen)
   const favoritePickerTaskIds = useStore((s) => s.favoritePickerTaskIds)
   const isManageCollectionsModalOpen = useStore((s) => s.isManageCollectionsModalOpen)
   const maskEditorImageId = useStore((s) => s.maskEditorImageId)
@@ -202,6 +205,16 @@ export default function App() {
               </span>
               收藏
             </button>
+            <button type="button" className={`cy-sidebar-link${creativeAssetsOpen ? ' cy-sidebar-link-active' : ''}`} onClick={() => setCreativeAssetsOpen(true)} aria-current={creativeAssetsOpen ? 'page' : undefined}>
+              <span className="cy-sidebar-link-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M4 7.5 12 3l8 4.5-8 4.5-8-4.5Z" />
+                  <path d="M4 12.5 12 17l8-4.5" />
+                  <path d="M4 17.5 12 22l8-4.5" />
+                </svg>
+              </span>
+              创作资产
+            </button>
             <a
               href="https://ai.cyanyi.com/"
               className="cy-sidebar-link"
@@ -263,6 +276,7 @@ export default function App() {
         {lightboxImageId && <Lightbox />}
         {showSettings && <SettingsModal />}
         {utilityPanelOpen && <UtilityPanel />}
+        {creativeAssetsOpen && <CreativeAssetsModal />}
         {supportPromptOpen && <SupportPromptModal />}
         {favoritePickerTaskIds && <FavoriteCollectionPickerModal />}
         {isManageCollectionsModalOpen && <ManageCollectionsModal />}

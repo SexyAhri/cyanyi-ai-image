@@ -4,6 +4,10 @@
 
 体验地址：[https://image.cyanyi.com/](https://image.cyanyi.com/)
 
+## 开源来源
+
+本站点基于开源项目 [GPT Image Playground](https://github.com/CookSleep/gpt_image_playground)（[MIT License](https://github.com/CookSleep/gpt_image_playground/blob/main/LICENSE)）修改。
+
 ## CyanYI 中转
 
 项目菜单现已内置 `CyanYI 中转` 入口，也可以直接访问：[https://ai.cyanyi.com/](https://ai.cyanyi.com/)

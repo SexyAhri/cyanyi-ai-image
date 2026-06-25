@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { readFileSync } from 'fs'
-import { normalizeDevProxyConfig } from './src/lib/devProxy'
+import { normalizeDevProxyConfig } from './src/lib/api/devProxy'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 
@@ -69,10 +69,10 @@ export default defineConfig(({ command }) => {
               if (id.includes('@fal-ai')) return 'fal'
               if (id.includes('react') || id.includes('react-dom') || id.includes('zustand')) return 'vendor'
             }
-            if (id.includes('/src/components/SettingsModal')) return 'settings'
-            if (id.includes('/src/components/FavoriteCollections')) return 'favorites'
-            if (id.includes('/src/components/MaskEditorModal')) return 'mask-editor'
-            if (id.includes('/src/components/DetailModal') || id.includes('/src/components/Lightbox')) return 'image-viewers'
+            if (id.includes('/src/components/settings/SettingsModal')) return 'settings'
+            if (id.includes('/src/components/favorites/FavoriteCollections')) return 'favorites'
+            if (id.includes('/src/components/gallery/MaskEditorModal')) return 'mask-editor'
+            if (id.includes('/src/components/gallery/DetailModal') || id.includes('/src/components/gallery/Lightbox')) return 'image-viewers'
           },
         },
       },
