@@ -38,7 +38,7 @@ export const DEFAULT_GEMINI_MODEL = 'nano-banana-2'
 export const DEFAULT_GROK_BASE_URL = OPENAI_DEFAULT_BASE_URL
 export const DEFAULT_GROK_MODEL = 'grok-image'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
-export const DEFAULT_API_TIMEOUT = 600
+export const DEFAULT_API_TIMEOUT = 900
 
 const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'gemini', 'grok'])
 const DEFAULT_CUSTOM_PROVIDER_PATHS = {

@@ -9,7 +9,6 @@ export type MediaAsset = {
 }
 
 export const POLL_INTERVAL_MS = 2500
-export const MAX_POLL_ATTEMPTS = 120
 
 export const sizeOptions = [
   { label: '横屏', value: '1280x720' },

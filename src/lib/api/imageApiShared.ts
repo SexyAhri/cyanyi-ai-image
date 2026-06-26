@@ -33,6 +33,136 @@ export interface CallApiResult {
   rawImageUrls?: string[]
   /** 并发多图请求中失败的单张请求 */
   failedRequests?: Array<{ requestIndex: number; error: string }>
+  /** 流缺少最终结果、用最后一张中间图兜底返回时为 true */
+  partialFallback?: boolean
+}
+
+/** 流式空闲超时下限：20 分钟内只要还在收到数据就不判超时 */
+export const MIN_STREAM_IDLE_TIMEOUT_MS = 1_200_000
+
+/**
+ * 把 profile.timeout（秒）换算为「空闲超时」毫秒数。
+ * 与旧的「整段请求总超时」语义不同：这里是连续无数据的最长容忍时长，
+ * 因此取 profile.timeout 与下限 1200 秒中的较大者，避免长图被误杀。
+ */
+export function getStreamIdleTimeoutMs(timeoutSeconds: number): number {
+  const fromProfile = Math.max(0, timeoutSeconds) * 1000
+  return Math.max(MIN_STREAM_IDLE_TIMEOUT_MS, fromProfile)
+}
+
+export interface IdleTimeoutController {
+  signal: AbortSignal
+  /** 收到新数据时调用，重置空闲计时器 */
+  refresh: () => void
+  /** 请求结束时调用，清除计时器 */
+  clear: () => void
+  /** 外部信号（用户停止等）需要中断时转发调用 */
+  abort: (reason?: unknown) => void
+}
+
+/**
+ * 创建「空闲超时」控制器：距上次 refresh 超过 idleMs 仍无新数据才 abort。
+ * 流式读取每收到一个 chunk 就调用 refresh()，使活跃的流不会被墙钟超时误杀。
+ */
+export function createIdleTimeoutController(
+  idleMs: number,
+): IdleTimeoutController {
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  const arm = () => {
+    timer = setTimeout(() => {
+      timer = null
+      controller.abort(
+        new DOMException(
+          `请求空闲超时：超过 ${Math.round(idleMs / 1000)} 秒未收到任何数据。`,
+          'TimeoutError',
+        ),
+      )
+    }, idleMs)
+  }
+
+  const clear = () => {
+    if (timer) {
+      clearTimeout(timer)
+      timer = null
+    }
+  }
+
+  arm()
+
+  return {
+    signal: controller.signal,
+    refresh: () => {
+      if (controller.signal.aborted) return
+      clear()
+      arm()
+    },
+    clear,
+    abort: (reason?: unknown) => {
+      clear()
+      controller.abort(reason)
+    },
+  }
+}
+
+export interface StreamAwareTimeoutController {
+  signal: AbortSignal
+  useIdleTimeout: (idleMs: number) => void
+  refresh: () => void
+  clear: () => void
+  abort: (reason?: unknown) => void
+}
+
+export function createStreamAwareTimeoutController(
+  timeoutSeconds: number,
+): StreamAwareTimeoutController {
+  const controller = new AbortController()
+  const timeoutMs = Math.max(0, timeoutSeconds) * 1000
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    timeoutTimer = null
+    controller.abort(new DOMException(`Request timed out after ${timeoutSeconds} seconds.`, 'TimeoutError'))
+  }, timeoutMs)
+  let idle: IdleTimeoutController | null = null
+  let forwardIdleAbort: (() => void) | null = null
+
+  const clearTimeoutTimer = () => {
+    if (!timeoutTimer) return
+    clearTimeout(timeoutTimer)
+    timeoutTimer = null
+  }
+
+  const clearIdle = () => {
+    if (idle && forwardIdleAbort) {
+      idle.signal.removeEventListener('abort', forwardIdleAbort)
+    }
+    idle?.clear()
+    idle = null
+    forwardIdleAbort = null
+  }
+
+  const clear = () => {
+    clearTimeoutTimer()
+    clearIdle()
+  }
+
+  return {
+    signal: controller.signal,
+    useIdleTimeout: (idleMs: number) => {
+      if (controller.signal.aborted) return
+      clearTimeoutTimer()
+      clearIdle()
+      idle = createIdleTimeoutController(idleMs)
+      forwardIdleAbort = () => controller.abort(idle?.signal.reason)
+      idle.signal.addEventListener('abort', forwardIdleAbort, { once: true })
+    },
+    refresh: () => idle?.refresh(),
+    clear,
+    abort: (reason?: unknown) => {
+      controller.abort(reason)
+      clear()
+    },
+  }
 }
 
 export function isHttpUrl(value: unknown): value is string {

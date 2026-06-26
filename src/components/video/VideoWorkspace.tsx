@@ -15,7 +15,6 @@ import {
 } from '../../lib/video/videoModels'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../../lib/ui/clipboard'
 import {
-  MAX_POLL_ATTEMPTS,
   POLL_INTERVAL_MS,
   delay,
   formatBytes,
@@ -125,6 +124,8 @@ export default function VideoWorkspace() {
   const runtimeConfig = (record: VideoGenerationRecord): VideoGenerationConfig => ({
     ...record.config,
     apiKey: activeProfile.apiKey,
+    timeout: record.config.timeout ?? activeProfile.timeout,
+    stream: record.config.stream ?? activeProfile.streamImages ?? true,
   })
 
   const persistRecord = async (record: VideoGenerationRecord) => {
@@ -151,6 +152,8 @@ export default function VideoWorkspace() {
       size: config.size,
       resolution: config.resolution,
       seconds: config.seconds,
+      timeout: config.timeout,
+      stream: config.stream,
     },
     status,
   })
@@ -191,7 +194,8 @@ export default function VideoWorkspace() {
     try {
       const task = await createVideoGenerationTask(runtimeConfig(item), item.prompt, item.references, { signal: controller.signal })
       updateRecord(item.id, { task })
-      for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt += 1) {
+      const deadline = Date.now() + Math.max(1, runtimeConfig(item).timeout) * 1000
+      while (Date.now() < deadline) {
         const state = await pollVideoGenerationTask(runtimeConfig(item), task, { signal: controller.signal })
         if (state.status === 'completed') {
           updateRecord(item.id, {
@@ -207,7 +211,8 @@ export default function VideoWorkspace() {
           return
         }
         if (state.status === 'failed') throw new Error(state.error)
-        await delay(POLL_INTERVAL_MS, controller.signal)
+        const remainingMs = Math.max(0, deadline - Date.now())
+        await delay(Math.min(state.retryAfterMs ?? POLL_INTERVAL_MS, remainingMs), controller.signal)
       }
       throw new Error('视频生成超时，请稍后重试。')
     } catch (error) {

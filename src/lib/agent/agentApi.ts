@@ -1,7 +1,7 @@
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../../types'
 import { callImageApi } from '../api/api'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from '../api/devProxy'
-import { appendStreamingFormatHint, maybeAppendStreamingHint, fetchImageUrlAsDataUrl, getApiErrorMessage, getMimeForActualParams, isDataUrl, isHttpUrl, MIME_MAP, normalizeBase64Image, pickActualParams } from '../api/imageApiShared'
+import { appendStreamingFormatHint, maybeAppendStreamingHint, createStreamAwareTimeoutController, fetchImageUrlAsDataUrl, getApiErrorMessage, getMimeForActualParams, getStreamIdleTimeoutMs, isDataUrl, isHttpUrl, MIME_MAP, normalizeBase64Image, pickActualParams } from '../api/imageApiShared'
 import { applyPromptStyleLock, createAgentPromptStyleLockInstruction } from '../gallery/promptStyleLock'
 
 export interface AgentApiResultImage {
@@ -23,6 +23,8 @@ export interface AgentApiResult {
   images: AgentApiResultImage[]
   outputItems: ResponsesApiResponse['output']
   rawResponsePayload?: string
+  /** 流缺少最终结果、但已收到过 partial 图时为 true，供上层保留已生成内容 */
+  partialFallback?: boolean
 }
 
 const AGENT_IMAGE_INSTRUCTIONS = [
@@ -362,7 +364,7 @@ function throwIfAborted(...signals: Array<AbortSignal | undefined>) {
   throw signal.reason instanceof Error ? signal.reason : new DOMException('请求已停止', 'AbortError')
 }
 
-async function readJsonServerSentEvents(response: Response, onEvent: (event: Record<string, unknown>) => void | Promise<void>, signals: Array<AbortSignal | undefined> = []): Promise<void> {
+async function readJsonServerSentEvents(response: Response, onEvent: (event: Record<string, unknown>) => void | Promise<void>, signals: Array<AbortSignal | undefined> = [], onActivity?: () => void): Promise<void> {
   if (!response.body) throw new Error('接口未返回可读取的流式响应')
 
   const reader = response.body.getReader()
@@ -403,6 +405,8 @@ async function readJsonServerSentEvents(response: Response, onEvent: (event: Rec
       const { value, done } = await reader.read()
       throwIfAborted(...signals)
       if (done) break
+      // 收到任何数据就续命空闲计时器，避免活跃的长流被墙钟超时误杀。
+      onActivity?.()
       buffer += decoder.decode(value, { stream: true })
 
       let separatorIndex = buffer.search(/\r?\n\r?\n/)
@@ -536,10 +540,12 @@ async function parseAgentStreamResponse(
   onImagePartialImage?: (event: { toolCallId: string; image: string; partialImageIndex?: number; outputIndex?: number }) => void | Promise<void>,
   onImageToolCompleted?: (image: AgentApiResultImage) => void | Promise<void>,
   onImageToolFailed?: (event: AgentApiImageToolFailure) => void | Promise<void>,
+  onActivity?: () => void,
 ): Promise<AgentApiResult> {
   let completedPayload: ResponsesApiResponse | null = null
   const outputItems: ResponsesOutputItem[] = []
   let streamedText = ''
+  let sawPartialImage = false
 
   const publishOutputItems = (items: ResponsesOutputItem[], outputIndices?: Array<number | undefined>) => {
     for (let i = 0; i < items.length; i += 1) {
@@ -589,6 +595,7 @@ async function parseAgentStreamResponse(
       const toolCallId = getStringValue(event, 'item_id')
       const b64 = getStringValue(event, 'partial_image_b64')
       if (toolCallId && b64) {
+        sawPartialImage = true
         await onImagePartialImage?.({
           toolCallId,
           image: normalizeBase64Image(b64, mime),
@@ -661,11 +668,24 @@ async function parseAgentStreamResponse(
     if (type === 'response.completed' || isRecordValue(event.response)) {
       completedPayload = payload
     }
-  }, [signal, callerSignal])
+  }, [signal, callerSignal], onActivity)
 
   throwIfAborted(signal, callerSignal)
   const payload: ResponsesApiResponse | null = completedPayload ?? (outputItems.length ? { output: outputItems } : null)
-  if (!payload) throw new Error('Agent 流式接口未返回最终响应数据')
+  if (!payload) {
+    // Layer 2 兜底：流里出现过 partial 图但缺最终结果时，不丢弃已生成内容。
+    // partial 图已通过 onImagePartialImage 回调落到对应 task，这里仅标记让上层保留。
+    if (sawPartialImage) {
+      return {
+        responseId: undefined,
+        text: streamedText.trim(),
+        images: [],
+        outputItems: [],
+        partialFallback: true,
+      }
+    }
+    throw new Error('Agent 流式接口未返回最终响应数据')
+  }
 
   const text = extractText(payload) || streamedText.trim()
   return {
@@ -696,10 +716,9 @@ export async function callAgentResponsesApi(opts: {
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
-  const abortFromCaller = () => controller.abort()
-  if (signal?.aborted) controller.abort()
+  const timeout = createStreamAwareTimeoutController(profile.timeout)
+  const abortFromCaller = () => timeout.abort()
+  if (signal?.aborted) timeout.abort()
   signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
@@ -718,7 +737,7 @@ export async function callAgentResponsesApi(opts: {
       headers: createHeaders(profile),
       cache: 'no-store',
       body: JSON.stringify(body),
-      signal: controller.signal,
+      signal: timeout.signal,
     })
 
     if (!response.ok) {
@@ -727,20 +746,21 @@ export async function callAgentResponsesApi(opts: {
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseAgentStreamResponse(response, mime, controller.signal, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed)
+      timeout.useIdleTimeout(getStreamIdleTimeoutMs(profile.timeout))
+      return parseAgentStreamResponse(response, mime, timeout.signal, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed, timeout.refresh)
     }
 
     const payload = await response.json() as ResponsesApiResponse
-    throwIfAborted(controller.signal, signal)
+    throwIfAborted(timeout.signal, signal)
     return {
       responseId: payload.id,
       text: extractText(payload),
-      images: await extractImages(payload, mime, controller.signal),
+      images: await extractImages(payload, mime, timeout.signal),
       outputItems: payload.output,
       rawResponsePayload: JSON.stringify(payload, null, 2),
     }
   } finally {
-    clearTimeout(timeoutId)
+    timeout.clear()
     signal?.removeEventListener('abort', abortFromCaller)
   }
 }
@@ -930,10 +950,9 @@ export async function callBatchImageSingle(opts: {
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
-  const abortFromCaller = () => controller.abort()
-  if (signal?.aborted) controller.abort()
+  const timeout = createStreamAwareTimeoutController(profile.timeout)
+  const abortFromCaller = () => timeout.abort()
+  if (signal?.aborted) timeout.abort()
   signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
@@ -989,7 +1008,7 @@ export async function callBatchImageSingle(opts: {
       headers: createHeaders(profile),
       cache: 'no-store',
       body: JSON.stringify(body),
-      signal: controller.signal,
+      signal: timeout.signal,
     })
 
     if (!response.ok) {
@@ -999,8 +1018,10 @@ export async function callBatchImageSingle(opts: {
 
     // Handle streaming
     if (profile.streamImages && isEventStreamResponse(response)) {
+      timeout.useIdleTimeout(getStreamIdleTimeoutMs(profile.timeout))
       await onImageToolStarted?.()
       let completedImage: AgentApiResultImage | null = null
+      let lastPartialImage: string | null = null
       let rawPayload: string | undefined
 
       await readJsonServerSentEvents(response, async (event) => {
@@ -1009,8 +1030,9 @@ export async function callBatchImageSingle(opts: {
         if (type === 'response.image_generation_call.partial_image') {
           const b64 = getStringValue(event, 'partial_image_b64')
           if (b64) {
+            lastPartialImage = normalizeBase64Image(b64, mime)
             await onPartialImage?.({
-              image: normalizeBase64Image(b64, mime),
+              image: lastPartialImage,
               partialImageIndex: getNumberValue(event, 'partial_image_index'),
             })
           }
@@ -1021,7 +1043,7 @@ export async function callBatchImageSingle(opts: {
           const payload = getStreamResponsePayload(event)
           const item = payload?.output?.[0]
           if (item) {
-            const img = await createAgentImageFromOutputItem(item, mime, controller.signal)
+            const img = await createAgentImageFromOutputItem(item, mime, timeout.signal)
             if (img) {
               completedImage = img
               await onImageToolCompleted?.(img)
@@ -1034,14 +1056,26 @@ export async function callBatchImageSingle(opts: {
           const payload = getStreamResponsePayload(event)
           if (payload) rawPayload = JSON.stringify(payload, null, 2)
           if (!completedImage && payload) {
-            const images = await extractImages(payload, mime, controller.signal)
+            const images = await extractImages(payload, mime, timeout.signal)
             if (images.length > 0) {
               completedImage = images[0]
               await onImageToolCompleted?.(completedImage)
             }
           }
         }
-      }, [controller.signal, signal])
+      }, [timeout.signal, signal], timeout.refresh)
+
+      // Layer 2 兜底：缺最终结果但收到过 partial 图时，用最后一张中间图兜底返回。
+      if (!completedImage && lastPartialImage) {
+        const fallbackImage: AgentApiResultImage = { dataUrl: lastPartialImage }
+        await onImageToolCompleted?.(fallbackImage)
+        return {
+          batchItemId,
+          image: fallbackImage,
+          error: null,
+          rawResponsePayload: rawPayload,
+        }
+      }
 
       return {
         batchItemId,
@@ -1053,7 +1087,7 @@ export async function callBatchImageSingle(opts: {
 
     // Non-streaming
     const payload = await response.json() as ResponsesApiResponse
-    const images = await extractImages(payload, mime, controller.signal)
+    const images = await extractImages(payload, mime, timeout.signal)
     const image = images[0] ?? null
     if (image) await onImageToolCompleted?.(image)
     return {
@@ -1063,12 +1097,12 @@ export async function callBatchImageSingle(opts: {
       rawResponsePayload: JSON.stringify(payload, null, 2),
     }
   } catch (err) {
-    if (controller.signal.aborted || signal?.aborted) {
+    if (timeout.signal.aborted || signal?.aborted) {
       return { batchItemId, image: null, error: '请求已取消' }
     }
     return { batchItemId, image: null, error: err instanceof Error ? err.message : String(err) }
   } finally {
-    clearTimeout(timeoutId)
+    timeout.clear()
     signal?.removeEventListener('abort', abortFromCaller)
   }
 }

@@ -8,10 +8,12 @@ import {
   maybeAppendStreamingHint,
   type CallApiOptions,
   type CallApiResult,
+  createStreamAwareTimeoutController,
   fetchImageUrlAsDataUrl,
   getApiErrorMessage,
   getDataUrlDecodedByteSize,
   getDataUrlEncodedByteSize,
+  getStreamIdleTimeoutMs,
   isDataUrl,
   isHttpUrl,
   mergeActualParams,
@@ -155,7 +157,7 @@ function parseServerSentEventBlock(block: string): string | null {
   return data
 }
 
-async function readJsonServerSentEvents(response: Response, onEvent: (event: Record<string, unknown>) => void | Promise<void>): Promise<void> {
+async function readJsonServerSentEvents(response: Response, onEvent: (event: Record<string, unknown>) => void | Promise<void>, onActivity?: () => void): Promise<void> {
   if (!response.body) throw new Error('接口未返回可读取的流式响应')
 
   const reader = response.body.getReader()
@@ -185,6 +187,8 @@ async function readJsonServerSentEvents(response: Response, onEvent: (event: Rec
   while (true) {
     const { value, done } = await reader.read()
     if (done) break
+    // 收到任何数据就续命空闲计时器，避免活跃的长流被墙钟超时误杀。
+    onActivity?.()
     buffer += decoder.decode(value, { stream: true })
 
     let separatorIndex = buffer.search(/\r?\n\r?\n/)
@@ -396,9 +400,11 @@ async function parseImagesApiStreamResponse(
   response: Response,
   mime: string,
   onPartialImage?: CallApiOptions['onPartialImage'],
+  onActivity?: () => void,
 ): Promise<CallApiResult> {
   const completedItems: ImageResponseItem[] = []
   let resultPayload: ImageApiResponse | null = null
+  let lastPartialImage: string | null = null
 
   await readJsonServerSentEvents(response, (event) => {
     const type = getStringValue(event, 'type')
@@ -406,8 +412,9 @@ async function parseImagesApiStreamResponse(
     if (type === 'image_generation.partial_image' || type === 'image_edit.partial_image') {
       const b64 = getStringValue(event, 'b64_json')
       if (b64) {
+        lastPartialImage = normalizeBase64Image(b64, getMimeForActualParams(pickActualParams(event), mime))
         onPartialImage?.({
-          image: normalizeBase64Image(b64, getMimeForActualParams(pickActualParams(event), mime)),
+          image: lastPartialImage,
           partialImageIndex: getNumberValue(event, 'partial_image_index'),
         })
       }
@@ -422,13 +429,17 @@ async function parseImagesApiStreamResponse(
     if (type === 'image_generation.completed' || type === 'image_edit.completed') {
       completedItems.push(eventToImageResponseItem(event))
     }
-  })
+  }, onActivity)
 
   if (resultPayload) {
     return parseImagesApiResponse(resultPayload, mime)
   }
 
   if (!completedItems.length) {
+    // Layer 2 兜底：缺最终结果但收到过 partial 图时，用最后一张中间图兜底返回。
+    if (lastPartialImage) {
+      return { images: [lastPartialImage], partialFallback: true }
+    }
     throw new Error('流式接口未返回最终图片数据')
   }
 
@@ -451,17 +462,20 @@ async function parseResponsesApiStreamResponse(
   response: Response,
   mime: string,
   onPartialImage?: CallApiOptions['onPartialImage'],
+  onActivity?: () => void,
 ): Promise<CallApiResult> {
   let completedPayload: ResponsesApiResponse | null = null
   const outputItems: ResponsesOutputItem[] = []
+  let lastPartialImage: string | null = null
 
   await readJsonServerSentEvents(response, (event) => {
     const type = getStringValue(event, 'type')
     if (type === 'response.image_generation_call.partial_image') {
       const b64 = getStringValue(event, 'partial_image_b64')
       if (b64) {
+        lastPartialImage = normalizeBase64Image(b64, mime)
         onPartialImage?.({
-          image: normalizeBase64Image(b64, mime),
+          image: lastPartialImage,
           partialImageIndex: getNumberValue(event, 'partial_image_index'),
         })
       }
@@ -477,17 +491,28 @@ async function parseResponsesApiStreamResponse(
     }
 
     completedPayload = payload
-  })
+  }, onActivity)
 
   const payload = completedPayload ?? (outputItems.length ? { output: outputItems } : null)
-  if (!payload) throw new Error('流式接口未返回最终图片数据')
+  if (!payload) {
+    // Layer 2 兜底：缺最终结果但收到过 partial 图时，用最后一张中间图兜底返回。
+    if (lastPartialImage) {
+      return { images: [lastPartialImage], partialFallback: true }
+    }
+    throw new Error('流式接口未返回最终图片数据')
+  }
 
   let imageResults: Awaited<ReturnType<typeof parseResponsesImageResults>>
   try {
     imageResults = await parseResponsesImageResults(payload, mime)
   } catch (err) {
     const collectedImageItems = outputItems.filter((item) => getResponsesImageResultValue(item.result))
-    if (collectedImageItems.length === 0) throw err
+    if (collectedImageItems.length === 0) {
+      if (lastPartialImage) {
+        return { images: [lastPartialImage], partialFallback: true }
+      }
+      throw err
+    }
     imageResults = await parseResponsesImageResults({ output: collectedImageItems }, mime)
   }
   const actualParams = mergeActualParams(imageResults[0]?.actualParams ?? {})
@@ -585,8 +610,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
   const requestHeaders = createRequestHeaders(profile)
   const paths = createOpenAICompatiblePaths()
 
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const timeout = createStreamAwareTimeoutController(profile.timeout)
 
   try {
     let response: Response
@@ -650,7 +674,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         headers: requestHeaders,
         cache: 'no-store',
         body: formData,
-        signal: controller.signal,
+        signal: timeout.signal,
       })
     } else {
       const body: Record<string, unknown> = {
@@ -687,7 +711,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         },
         cache: 'no-store',
         body: JSON.stringify(body),
-        signal: controller.signal,
+        signal: timeout.signal,
       })
     }
 
@@ -697,13 +721,14 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseImagesApiStreamResponse(response, mime, opts.onPartialImage)
+      timeout.useIdleTimeout(getStreamIdleTimeoutMs(profile.timeout))
+      return parseImagesApiStreamResponse(response, mime, opts.onPartialImage, timeout.refresh)
     }
 
     await assertSupportedApiResponse(response, profile.streamImages ? 'stream-or-json' : 'json')
-    return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
+    return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, timeout.signal)
   } finally {
-    clearTimeout(timeoutId)
+    timeout.clear()
   }
 }
 
@@ -1065,8 +1090,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const requestHeaders = createRequestHeaders(profile)
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const timeout = createStreamAwareTimeoutController(profile.timeout)
 
   try {
     if (opts.maskDataUrl) {
@@ -1096,7 +1120,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       },
       cache: 'no-store',
       body: JSON.stringify(body),
-      signal: controller.signal,
+      signal: timeout.signal,
     })
 
     if (!response.ok) {
@@ -1105,12 +1129,13 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseResponsesApiStreamResponse(response, mime, opts.onPartialImage)
+      timeout.useIdleTimeout(getStreamIdleTimeoutMs(profile.timeout))
+      return parseResponsesApiStreamResponse(response, mime, opts.onPartialImage, timeout.refresh)
     }
 
     await assertSupportedApiResponse(response, profile.streamImages ? 'stream-or-json' : 'json')
     const payload = await response.json() as ResponsesApiResponse
-    const imageResults = await parseResponsesImageResults(payload, mime, controller.signal)
+    const imageResults = await parseResponsesImageResults(payload, mime, timeout.signal)
     const actualParams = mergeActualParams(
       imageResults[0]?.actualParams ?? {},
     )
@@ -1124,6 +1149,6 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       rawImageUrls: imageResults.map((result) => result.rawImageUrl).filter(isHttpUrl),
     }
   } finally {
-    clearTimeout(timeoutId)
+    timeout.clear()
   }
 }

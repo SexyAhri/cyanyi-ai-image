@@ -382,6 +382,39 @@ describe('callAgentResponsesApi', () => {
     expect(body.model).not.toBe('agent-brain-model')
   })
 
+  it('uses the last streamed partial image for app-executed Responses image calls without a final result', async () => {
+    const streamBody = [
+      'data: {"type":"response.image_generation_call.partial_image","partial_image_index":0,"partial_image_b64":"cGFydGlhbA=="}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(streamBody, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    }))
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'image-key',
+      apiMode: 'responses',
+      streamImages: true,
+    })
+
+    const result = await callBatchImageSingle({
+      settings: DEFAULT_SETTINGS,
+      profile,
+      params: DEFAULT_PARAMS,
+      batchItemId: 'image',
+      prompt: 'draw one image',
+      referenceImageDataUrls: [],
+    })
+
+    expect(result).toMatchObject({
+      batchItemId: 'image',
+      image: { dataUrl: 'data:image/jpeg;base64,cGFydGlhbA==' },
+      error: null,
+    })
+  })
+
   it("does not duplicate the assistant message item when response.completed lacks an item id", async () => {
     // `response.completed` can repeat the streamed item without id; it should merge, not append.
     const itemId = "msg_abc123"

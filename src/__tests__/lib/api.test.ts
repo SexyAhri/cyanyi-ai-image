@@ -548,6 +548,36 @@ describe('callImageApi', () => {
     })
   })
 
+  it('uses the last Images API partial image when the stream omits a final result', async () => {
+    const streamBody = [
+      'data: {"type":"image_generation.partial_image","partial_image_index":0,"b64_json":"cGFydGlhbA=="}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+    const partialImages: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(streamBody, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    }))
+
+    const result = await callImageApi({
+      settings: withOpenAIProfile({
+        apiKey: 'test-key',
+        apiMode: 'images',
+        streamImages: true,
+      }),
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+      onPartialImage: (partial: { image: string }) => partialImages.push(partial.image),
+    } as any)
+
+    expect(partialImages).toEqual(['data:image/jpeg;base64,cGFydGlhbA=='])
+    expect(result.images).toEqual(['data:image/jpeg;base64,cGFydGlhbA=='])
+    expect(result.partialFallback).toBe(true)
+  })
+
   it('resolves Images API streamed completed URL results', async () => {
     const imageUrl = 'https://oss.filenest.top/uploads/result.png'
     const streamBody = [
@@ -845,6 +875,43 @@ describe('callImageApi', () => {
       actualParamsList: [{ size: '1024x1024' }],
       revisedPrompts: ['rewritten'],
     })
+  })
+
+  it('uses the last Responses API partial image when the stream omits a final result', async () => {
+    const streamBody = [
+      'data: {"type":"response.image_generation_call.partial_image","partial_image_index":0,"partial_image_b64":"cGFydGlhbA=="}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+    const partialImages: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(streamBody, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    }))
+
+    const result = await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        apiKey: 'test-key',
+        apiMode: 'responses',
+        streamImages: true,
+        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
+          ...profile,
+          apiKey: 'test-key',
+          apiMode: 'responses',
+          streamImages: true,
+        })),
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+      onPartialImage: (partial: { image: string }) => partialImages.push(partial.image),
+    } as any)
+
+    expect(partialImages).toEqual(['data:image/jpeg;base64,cGFydGlhbA=='])
+    expect(result.images).toEqual(['data:image/jpeg;base64,cGFydGlhbA=='])
+    expect(result.partialFallback).toBe(true)
   })
 
   it('keeps successful Responses API concurrent results when one request fails', async () => {

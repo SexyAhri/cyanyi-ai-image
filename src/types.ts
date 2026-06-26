@@ -315,6 +315,8 @@ export interface VideoGenerationRecord {
     size: string
     resolution: string
     seconds: string
+    timeout?: number
+    stream?: boolean
   }
   status: 'queued' | 'running' | 'success' | 'failed' | 'cancelled'
   task?: {

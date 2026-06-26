@@ -312,13 +312,18 @@ export function createTaskExecutionController(
       ? { taskId: task.customTaskId }
       : null;
 
+    const shouldUseStreamIdleTimeout =
+      activeProfile.streamImages === true &&
+      task.autoRetryReason !== "stream-fallback";
+
     if (
       !isAsyncCustomProviderTask(
         requestSettings,
         taskProvider,
         task.inputImageIds.length > 0,
       ) &&
-      !usesConcurrentOpenAIImageRequests(activeProfile, task.params)
+      !usesConcurrentOpenAIImageRequests(activeProfile, task.params) &&
+      !shouldUseStreamIdleTimeout
     ) {
       scheduleOpenAIWatchdog(taskId, activeProfile.timeout, activeProfile);
     }
