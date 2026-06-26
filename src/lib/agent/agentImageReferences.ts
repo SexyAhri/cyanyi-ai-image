@@ -1,7 +1,7 @@
 import type { AgentRound, TaskRecord } from '../../types'
 import { replaceImageMentionsForApi, stripImageMentionMarkers } from '../gallery/promptImageMentions'
 
-const AGENT_ROUND_IMAGE_REFERENCE_RE = /@(?:第)?(\d+)轮图(\d+)/g
+const AGENT_ROUND_IMAGE_REFERENCE_RE = /@\u7b2c\s*(\d+)\s*\u8f6e\u56fe\s*(\d+)/g
 const AGENT_REF_TAG_RE = /<ref\b[^>]*\bid=(["'])(round-(\d+)-(?:image|reference)-(\d+))\1[^>]*\/?>/g
 
 export function getAgentCurrentReferenceId(round: AgentRound, index: number) {
@@ -35,6 +35,24 @@ export function collectAgentRoundOutputImageSlots(round: AgentRound, tasks: Task
 
 export function extractAgentReferenceIds(text: string) {
   return Array.from(text.matchAll(AGENT_REF_TAG_RE), (match) => match[2]).filter((id): id is string => Boolean(id))
+}
+
+export function extractAgentPromptReferenceIds(text: string, rounds: AgentRound[], tasks: TaskRecord[]) {
+  const ids = new Set<string>()
+  for (const id of extractAgentReferenceIds(text)) ids.add(id)
+
+  for (const match of text.matchAll(AGENT_ROUND_IMAGE_REFERENCE_RE)) {
+    const roundIndex = Number(match[1]) - 1
+    const imageIndex = Number(match[2]) - 1
+    const sourceRound = rounds[roundIndex]
+    if (!sourceRound || imageIndex < 0) continue
+
+    const imageId = collectAgentRoundOutputImageSlots(sourceRound, tasks)[imageIndex]
+    if (!imageId) continue
+    ids.add(getAgentGeneratedImageReferenceId(sourceRound, imageIndex))
+  }
+
+  return [...ids]
 }
 
 export function resolveAgentPromptImageReferences(prompt: string, rounds: AgentRound[], tasks: TaskRecord[]) {

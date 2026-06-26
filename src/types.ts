@@ -321,6 +321,7 @@ export interface VideoGenerationRecord {
   referenceImageIds?: string[]
   referenceImageCount?: number
   status: 'queued' | 'running' | 'success' | 'failed' | 'cancelled'
+  progress?: number
   task?: {
     id: string
     model: string

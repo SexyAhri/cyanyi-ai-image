@@ -739,7 +739,7 @@ describe('custom providers', () => {
     expect(normalizeSettings({ agentMathFormattingPrompt: false }).agentMathFormattingPrompt).toBe(false)
   })
 
-  it('routes Agent image generation to the selected profile with fallback to Agent profile', () => {
+  it('routes Agent image generation to the selected profile with fallback to Gallery profile', () => {
     const agentProfile = createDefaultOpenAIProfile({
       id: 'agent-responses',
       name: 'Agent Responses',
@@ -754,9 +754,17 @@ describe('custom providers', () => {
       apiMode: 'responses',
       model: 'image-model',
     })
+    const galleryProfile = createDefaultOpenAIProfile({
+      id: 'gallery-images',
+      name: 'Gallery Images',
+      apiKey: 'gallery-key',
+      apiMode: 'images',
+      model: 'gallery-model',
+    })
     const settings = normalizeSettings({
-      profiles: [agentProfile, imageProfile],
+      profiles: [agentProfile, imageProfile, galleryProfile],
       activeProfileId: agentProfile.id,
+      galleryProfileId: galleryProfile.id,
       agentProfileId: agentProfile.id,
       agentImageProfileId: imageProfile.id,
     })
@@ -768,13 +776,37 @@ describe('custom providers', () => {
     })
 
     const fallback = normalizeSettings({
-      profiles: [agentProfile, imageProfile],
+      profiles: [agentProfile, imageProfile, galleryProfile],
       activeProfileId: agentProfile.id,
+      galleryProfileId: galleryProfile.id,
       agentProfileId: agentProfile.id,
       agentImageProfileId: 'missing-profile',
     })
     expect(fallback.agentImageProfileId).toBeNull()
-    expect(getAgentImageApiProfile(fallback).id).toBe(agentProfile.id)
+    expect(getAgentImageApiProfile(fallback).id).toBe(galleryProfile.id)
+  })
+
+  it('prefers a text-capable Responses profile for Agent conversation over an active image Responses profile', () => {
+    const imageResponsesProfile = createDefaultOpenAIProfile({
+      id: 'image-responses',
+      name: 'Image Responses',
+      apiKey: 'image-key',
+      apiMode: 'responses',
+      model: 'gpt-image-2',
+    })
+    const agentProfile = createDefaultOpenAIProfile({
+      id: 'agent-responses',
+      name: 'Agent Responses',
+      apiKey: 'agent-key',
+      apiMode: 'responses',
+      model: 'gpt-5.5',
+    })
+    const settings = normalizeSettings({
+      profiles: [imageResponsesProfile, agentProfile],
+      activeProfileId: imageResponsesProfile.id,
+    })
+
+    expect(getAgentApiProfile(settings).id).toBe(agentProfile.id)
   })
 
   it('routes video generation to the selected Videos profile', () => {

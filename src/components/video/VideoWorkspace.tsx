@@ -189,7 +189,7 @@ export default function VideoWorkspace() {
     startedAtRef.current = performance.now()
     setRunningId(item.id)
     setElapsedSeconds(0)
-    updateRecord(item.id, { status: 'running', error: undefined })
+    updateRecord(item.id, { status: 'running', error: undefined, progress: 0 })
 
     try {
       const task = await createVideoGenerationTask(runtimeConfig(item), item.prompt, item.references, { signal: controller.signal })
@@ -200,6 +200,7 @@ export default function VideoWorkspace() {
         if (state.status === 'completed') {
           updateRecord(item.id, {
             status: 'success',
+            progress: 100,
             video: {
               dataUrl: state.video.dataUrl,
               remoteUrl: state.video.url?.startsWith('http') ? state.video.url : undefined,
@@ -211,6 +212,7 @@ export default function VideoWorkspace() {
           return
         }
         if (state.status === 'failed') throw new Error(state.error)
+        if (state.progress != null) updateRecord(item.id, { progress: state.progress })
         const remainingMs = Math.max(0, deadline - Date.now())
         await delay(Math.min(state.retryAfterMs ?? POLL_INTERVAL_MS, remainingMs), controller.signal)
       }

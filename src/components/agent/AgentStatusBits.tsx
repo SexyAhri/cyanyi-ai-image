@@ -3,9 +3,16 @@ import type { AgentWebSearchStatus } from '../../lib/agent/agentWebSearch'
 export function AgentStreamingCursor() {
   return (
     <span
-      aria-label="正在生成"
-      className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-blue-500 align-baseline dark:bg-blue-400"
-    />
+      aria-label="正在思考"
+      className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-300"
+    >
+      <span>正在思考</span>
+      <span className="flex gap-0.5">
+        <span className="h-1 w-1 animate-pulse rounded-full bg-current" />
+        <span className="h-1 w-1 animate-pulse rounded-full bg-current [animation-delay:150ms]" />
+        <span className="h-1 w-1 animate-pulse rounded-full bg-current [animation-delay:300ms]" />
+      </span>
+    </span>
   )
 }
 

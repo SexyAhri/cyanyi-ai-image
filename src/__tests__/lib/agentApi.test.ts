@@ -8,7 +8,7 @@ describe('callAgentResponsesApi', () => {
     vi.restoreAllMocks()
   })
 
-  it('streams Agent text and requests configured partial images', async () => {
+  it('streams Agent text and uses app function tools for image generation', async () => {
     const streamBody = [
       'data: {"type":"response.output_text.delta","delta":"Hel"}',
       '',
@@ -42,7 +42,13 @@ describe('callAgentResponsesApi', () => {
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.stream).toBe(true)
-    expect(body.tools[0].partial_images).toBe(2)
+    expect(body.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'function', name: 'generate_image' }),
+      expect.objectContaining({ type: 'function', name: 'generate_image_batch' }),
+    ]))
+    expect(body.tools).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'image_generation' }),
+    ]))
     expect(textDeltas).toEqual(['Hel', 'lo'])
     expect(result).toMatchObject({
       responseId: 'resp_1',
@@ -94,7 +100,174 @@ describe('callAgentResponsesApi', () => {
     expect(result.rawResponsePayload).toContain('resp_1')
   })
 
-  it('passes mask data to the Agent image tool', async () => {
+  it('falls back to non-streaming Agent responses when streaming is temporarily unavailable', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        message: '服务繁忙，请稍后重试',
+      }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'resp_fallback',
+        output: [{
+          type: 'message',
+          content: [{ type: 'output_text', text: '可以正常对话' }],
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      streamImages: true,
+      model: 'gpt-5.5',
+    })
+
+    const result = await callAgentResponsesApi({
+      settings: DEFAULT_SETTINGS,
+      profile,
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: '你好' }] }],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const firstBody = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    const secondBody = JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))
+    expect(firstBody.stream).toBe(true)
+    expect(secondBody.stream).toBeUndefined()
+    expect(secondBody.tools).toBeDefined()
+    expect(result.text).toBe('可以正常对话')
+  })
+
+  it('falls back to text-only chat when tool requests keep returning NewAPI upstream errors', async () => {
+    const upstreamError = {
+      error: {
+        message: 'openai_error',
+        type: 'bad_response_status_code',
+        code: 'bad_response_status_code',
+        param: '524',
+      },
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(upstreamError), {
+        status: 524,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(upstreamError), {
+        status: 524,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'resp_text_only',
+        output: [{
+          type: 'message',
+          content: [{ type: 'output_text', text: '这里有几条提示词示例。' }],
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      streamImages: true,
+      model: 'gpt-5.5',
+    })
+
+    const result = await callAgentResponsesApi({
+      settings: DEFAULT_SETTINGS,
+      profile,
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: '给点提示词看看' }] }],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    const firstBody = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    const secondBody = JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))
+    const thirdBody = JSON.parse(String((fetchMock.mock.calls[2][1] as RequestInit).body))
+    expect(firstBody.stream).toBe(true)
+    expect(firstBody.tools).toBeDefined()
+    expect(secondBody.stream).toBeUndefined()
+    expect(secondBody.tools).toBeDefined()
+    expect(thirdBody.stream).toBeUndefined()
+    expect(thirdBody.tools).toBeUndefined()
+    expect(result.text).toBe('这里有几条提示词示例。')
+  })
+
+  it('does not fall back to text-only chat when disabled for media requests', async () => {
+    const upstreamError = {
+      error: {
+        message: 'Upstream service temporarily unavailable',
+        type: 'upstream_error',
+      },
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(upstreamError), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(upstreamError), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      streamImages: true,
+      model: 'gpt-5.5',
+    })
+
+    await expect(callAgentResponsesApi({
+      settings: DEFAULT_SETTINGS,
+      profile,
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: '生成一张测试图片' }] }],
+      allowTextOnlyFallback: false,
+    })).rejects.toThrow(/temporarily unavailable/i)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const firstBody = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    const secondBody = JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))
+    expect(firstBody.tools).toBeDefined()
+    expect(secondBody.tools).toBeDefined()
+  })
+
+  it('sends plain Agent chat without media tools when tools mode is none', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'resp_plain',
+      output: [{
+        type: 'message',
+        content: [{ type: 'output_text', text: '你好，有什么可以帮你？' }],
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      streamImages: true,
+      model: 'gpt-5.5',
+    })
+
+    const result = await callAgentResponsesApi({
+      settings: DEFAULT_SETTINGS,
+      profile,
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: '你好' }] }],
+      toolsMode: 'none',
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    expect(body.stream).toBe(true)
+    expect(body.tools).toBeUndefined()
+    expect(result.text).toBe('你好，有什么可以帮你？')
+  })
+
+  it('does not send mask data through the Agent planning request', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       output: [{
         type: 'message',
@@ -119,7 +292,10 @@ describe('callAgentResponsesApi', () => {
 
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
-    expect(body.tools[0].input_image_mask).toEqual({ image_url: 'data:image/png;base64,bWFzaw==' })
+    expect(JSON.stringify(body.tools)).not.toContain('input_image_mask')
+    expect(body.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'function', name: 'generate_image' }),
+    ]))
   })
 
   it('extracts image_generation results from base64 object fields', async () => {
@@ -150,6 +326,100 @@ describe('callAgentResponsesApi', () => {
       dataUrl: 'data:image/jpeg;base64,ZmlsZQ==',
       actualParams: {},
     }])
+  })
+
+  it('extracts image_generation results even when compatible providers keep status as generating', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'resp_with_generating_result',
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: '已生成一张测试图片。' }],
+        },
+        {
+          type: 'image_generation_call',
+          id: 'ig_generating',
+          status: 'generating',
+          result: 'ZmlsZQ==',
+          output_format: 'png',
+        },
+      ],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+    })
+
+    const result = await callAgentResponsesApi({
+      settings: DEFAULT_SETTINGS,
+      profile,
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: '生成一张测试图片' }] }],
+    })
+
+    expect(result.images).toEqual([{
+      toolCallId: 'ig_generating',
+      dataUrl: 'data:image/png;base64,ZmlsZQ==',
+      actualParams: { output_format: 'png' },
+    }])
+  })
+
+  it('falls back to Agent conversation model when the selected profile model is image-only', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'message',
+        content: [{ type: 'output_text', text: 'OK' }],
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      model: 'gpt-image-2',
+    })
+
+    await callAgentResponsesApi({
+      settings: { ...DEFAULT_SETTINGS, agentModel: 'gpt-5.5' },
+      profile,
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: '生成一张测试图片' }] }],
+    })
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    expect(body.model).toBe('gpt-5.5')
+  })
+
+  it('uses the selected Agent profile model when it is text-capable', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'message',
+        content: [{ type: 'output_text', text: 'OK' }],
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      model: 'agent-model',
+    })
+
+    await callAgentResponsesApi({
+      settings: { ...DEFAULT_SETTINGS, agentModel: 'fallback-agent-model' },
+      profile,
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: '你好' }] }],
+    })
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    expect(body.model).toBe('agent-model')
   })
 
   it('stops reading a stream when the caller aborts after output starts', async () => {
@@ -339,12 +609,47 @@ describe('callAgentResponsesApi', () => {
     })
 
     const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
-    expect(body.model).toBe(DEFAULT_SETTINGS.agentModel)
+    expect(body.model).toBe('agent-model')
     expect(body.model).not.toBe('nano-banana-2')
     expect(body.instructions).toContain('Use generate_image for a single requested image.')
     expect(body.tools).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'function', name: 'generate_image' }),
       expect.objectContaining({ type: 'function', name: 'generate_image_batch' }),
+    ]))
+    expect(body.tools).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'image_generation' }),
+    ]))
+  })
+
+  it('uses app function tools even when Agent image generation shares the same Responses profile', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'message',
+        content: [{ type: 'output_text', text: 'OK' }],
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const profile = createDefaultOpenAIProfile({
+      id: 'shared-responses',
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      model: 'gpt-5.5',
+    })
+
+    await callAgentResponsesApi({
+      settings: DEFAULT_SETTINGS,
+      profile,
+      imageProfile: profile,
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'draw one image' }] }],
+    })
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    expect(body.instructions).toContain('Do not call the built-in image_generation tool')
+    expect(body.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'function', name: 'generate_image' }),
     ]))
     expect(body.tools).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'image_generation' }),

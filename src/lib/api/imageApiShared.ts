@@ -307,7 +307,11 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
   const textResponse = response.clone()
   try {
     const errJson = await response.json()
-    if (errJson.error?.message) errorMsg = errJson.error.message
+    if (errJson.error?.message) {
+      const details = [errJson.error.message, errJson.error.type, errJson.error.code, errJson.error.param]
+        .filter((item) => typeof item === 'string' && item.trim())
+      errorMsg = details.join(' ')
+    }
     else if (typeof errJson.detail === 'string') errorMsg = errJson.detail
     else if (Array.isArray(errJson.detail)) errorMsg = errJson.detail.map((item: unknown) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n')
     else if (typeof errJson.error === 'string') errorMsg = errJson.error

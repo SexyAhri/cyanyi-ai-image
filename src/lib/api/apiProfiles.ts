@@ -28,9 +28,9 @@ const DEFAULT_BASE_URL = isImportableConfigUrl(RAW_DEFAULT_API_URL)
   ? ''
   : RAW_DEFAULT_API_URL || OPENAI_DEFAULT_BASE_URL
 export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
-export const DEFAULT_RESPONSES_MODEL = 'gpt-image-2'
 export const DEFAULT_VIDEOS_MODEL = DEFAULT_VIDEO_MODEL
 export const DEFAULT_AGENT_MODEL = 'gpt-5.5'
+export const DEFAULT_RESPONSES_MODEL = DEFAULT_AGENT_MODEL
 const LEGACY_NEWAPI_PLAYGROUND_BASE_URL = 'https://ai.cyanyi.com/pg'
 export const DEFAULT_GEMINI_BASE_URL = OPENAI_DEFAULT_BASE_URL
 export const GOOGLE_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta'
@@ -751,6 +751,15 @@ export function isAgentCompatibleApiProfile(profile: ApiProfile): boolean {
   return profile.provider === 'openai' && profile.apiMode === 'responses'
 }
 
+function isLikelyImageOnlyResponsesModel(model: string): boolean {
+  return /(?:^|[-_])(image|imagine|banana)(?:[-_]|$)/i.test(model.trim())
+}
+
+function isLikelyAgentConversationProfile(profile: ApiProfile): boolean {
+  if (!isAgentCompatibleApiProfile(profile)) return false
+  return !isLikelyImageOnlyResponsesModel(profile.model)
+}
+
 export function getAgentApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile {
   const normalized = normalizeSettings(settings)
   const routed = normalized.agentProfileId
@@ -758,8 +767,10 @@ export function getAgentApiProfile(settings: Partial<AppSettings> | unknown): Ap
     : null
   const active = getActiveApiProfile(settings)
   if (routed && isAgentCompatibleApiProfile(routed)) return routed
-  if (isAgentCompatibleApiProfile(active)) return active
-  return normalized.profiles.find(isAgentCompatibleApiProfile) ?? active
+  if (isLikelyAgentConversationProfile(active)) return active
+  return normalized.profiles.find(isLikelyAgentConversationProfile) ??
+    normalized.profiles.find(isAgentCompatibleApiProfile) ??
+    active
 }
 
 export function getAgentImageApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile {
@@ -768,7 +779,7 @@ export function getAgentImageApiProfile(settings: Partial<AppSettings> | unknown
     ? normalized.profiles.find((profile) => profile.id === normalized.agentImageProfileId)
     : null
   if (routed) return routed
-  return getAgentApiProfile(settings)
+  return getGalleryApiProfile(settings)
 }
 
 export function getVideoApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile {

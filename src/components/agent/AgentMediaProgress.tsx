@@ -6,6 +6,10 @@ function progressToneClass(status: 'running' | 'done' | 'error') {
   return 'bg-blue-500'
 }
 
+function clampProgress(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
 export function AgentMediaProgress({
   imageTasks,
   videoRecords,
@@ -28,8 +32,12 @@ export function AgentMediaProgress({
   const done = doneImages + doneVideos
   const running = runningImages + runningVideos
   const status = failed > 0 && running === 0 ? 'error' : done >= total ? 'done' : 'running'
-  const percent = Math.max(6, Math.round((done / total) * 100))
-
+  const videoProgressSum = videoRecords.reduce((sum, record) => {
+    if (record.status === 'success') return sum + 100
+    if (record.status === 'failed' || record.status === 'cancelled') return sum
+    return sum + clampProgress(record.status === 'queued' ? 0 : (record.progress ?? 8))
+  }, 0)
+  const percent = Math.max(6, clampProgress((doneImages * 100 + videoProgressSum) / total))
   const detail = [
     totalImages ? `图片 ${doneImages}/${totalImages}${runningImages ? ' 生成中' : ''}${failedImages ? ` 失败 ${failedImages}` : ''}` : '',
     totalVideos ? `视频 ${doneVideos}/${totalVideos}${runningVideos ? ' 生成中' : ''}${failedVideos ? ` 失败 ${failedVideos}` : ''}` : '',
@@ -41,7 +49,7 @@ export function AgentMediaProgress({
         <span className="font-medium">
           {status === 'done' ? '媒体生成完成' : status === 'error' ? '媒体生成有失败项' : '媒体生成中'}
         </span>
-        <span className="text-[11px] opacity-75">{done}/{total}</span>
+        <span className="text-[11px] opacity-75">{status === 'running' ? `${percent}%` : `${done}/${total}`}</span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-white/80 dark:bg-black/20">
         <div

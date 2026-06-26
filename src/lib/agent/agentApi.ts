@@ -92,6 +92,39 @@ function createAgentInstructions(settings: AppSettings, useExternalImageTool = f
   return instructions.join('\n')
 }
 
+function createAgentTextOnlyFallbackInstructions(settings: AppSettings) {
+  const instructions = [
+    'You are a helpful assistant in a multi-turn app.',
+    'Answer the user directly in text.',
+    'Tool use is disabled for this fallback request. Do not claim that you generated images or videos.',
+    'If the user asks for image or video generation, explain that the media tool is temporarily unavailable and ask them to retry.',
+  ]
+
+  if (settings.agentMathFormattingPrompt) instructions.push('', AGENT_MATH_FORMATTING_INSTRUCTIONS)
+  return instructions.join('\n')
+}
+
+function shouldFallbackAgentResponsesRequest(error: unknown, wasStreaming: boolean) {
+  const message = error instanceof Error ? error.message : String(error)
+  const lower = message.toLowerCase()
+  if (/unauthorized|forbidden|invalid api key|access token|permission|auth|api key|401|403|404/.test(lower) || /无权|鉴权|权限|密钥|地址/.test(message)) {
+    return false
+  }
+  return wasStreaming ||
+    /stream|tool|function|image_generation|tool_choice|unsupported|invalid parameter|schema|temporarily|overload|busy|system under load|service unavailable|gateway|timeout|bad_response_status_code|openai_error|502|503|504|524/.test(lower) ||
+    /服务繁忙|系统繁忙|暂时无法|暂时不可用|临时不可用|稍后重试|负载|工具|参数|流式|超时|网关/.test(message)
+}
+
+function isLikelyImageOnlyResponsesModel(model: string) {
+  return /(?:^|[-_])(image|imagine|banana)(?:[-_]|$)/i.test(model.trim())
+}
+
+function getAgentConversationModel(settings: AppSettings, profile: ApiProfile) {
+  const profileModel = profile.model?.trim()
+  if (profileModel && !isLikelyImageOnlyResponsesModel(profileModel)) return profileModel
+  return settings.agentModel?.trim() || profileModel || settings.model
+}
+
 const AGENT_TITLE_INSTRUCTIONS = [
   'Generate a concise conversation title from the first user message.',
   'Output exactly one XML element in this form: <title>short title</title>',
@@ -107,38 +140,6 @@ function createHeaders(profile: ApiProfile): Record<string, string> {
     Authorization: `Bearer ${profile.apiKey}`,
     'Content-Type': 'application/json',
   }
-}
-
-function createImageTool(params: TaskParams, profile: ApiProfile, maskDataUrl?: string): Record<string, unknown> {
-  const tool: Record<string, unknown> = {
-    type: 'image_generation',
-    action: 'auto',
-    size: params.size,
-    output_format: params.output_format,
-    moderation: params.moderation,
-  }
-
-  tool.quality = params.quality
-
-  if (params.output_format !== 'png' && params.output_compression != null) {
-    tool.output_compression = params.output_compression
-  }
-
-  if (profile.streamImages) {
-    tool.partial_images = profile.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES
-  }
-
-  if (maskDataUrl) {
-    tool.input_image_mask = {
-      image_url: maskDataUrl,
-    }
-  }
-
-  return tool
-}
-
-function shouldUseExternalImageTool(profile: ApiProfile, imageProfile: ApiProfile): boolean {
-  return imageProfile.id !== profile.id || imageProfile.provider !== 'openai' || imageProfile.apiMode !== 'responses'
 }
 
 function createSingleImageFunctionTool(): Record<string, unknown> {
@@ -166,11 +167,8 @@ function createSingleImageFunctionTool(): Record<string, unknown> {
   }
 }
 
-function createAgentTools(params: TaskParams, profile: ApiProfile, settings: AppSettings, maskDataUrl?: string, imageProfile: ApiProfile = profile): Array<Record<string, unknown>> {
-  const useExternalImageTool = shouldUseExternalImageTool(profile, imageProfile)
-  const tools: Array<Record<string, unknown>> = useExternalImageTool
-    ? [createSingleImageFunctionTool()]
-    : [createImageTool(params, profile, maskDataUrl)]
+function createAgentTools(settings: AppSettings): Array<Record<string, unknown>> {
+  const tools: Array<Record<string, unknown>> = [createSingleImageFunctionTool()]
 
   // generate_image_batch: custom function tool for concurrent multi-image generation
   tools.push({
@@ -180,9 +178,7 @@ function createAgentTools(params: TaskParams, profile: ApiProfile, settings: App
       'Generate multiple images concurrently. Use this ONLY when:',
       '1. There are 2+ remaining images whose prerequisites (base references) are ALL already generated.',
       '2. These images are independent of each other (none references another image in this same batch).',
-      useExternalImageTool
-        ? 'For single images or prerequisite/base images, use generate_image instead.'
-        : 'For single images or prerequisite/base images, use the built-in image_generation tool instead.',
+      'For single images or prerequisite/base images, use generate_image instead.',
       'Each image prompt must be self-contained and include full visual style descriptions.',
       'If an image needs to match a previously generated image, include the corresponding XML tag (e.g. <ref id="round-1-image-1" />) inside that image prompt so the app can attach the reference image automatically.',
     ].join(' '),
@@ -737,6 +733,7 @@ export async function callAgentResponsesApi(opts: {
   imageProfile?: ApiProfile
   params: TaskParams
   input: unknown
+  toolsMode?: 'auto' | 'media' | 'none'
   maskDataUrl?: string
   signal?: AbortSignal
   onTextDelta?: (delta: string) => void
@@ -745,8 +742,9 @@ export async function callAgentResponsesApi(opts: {
   onImagePartialImage?: (event: { toolCallId: string; image: string; partialImageIndex?: number; outputIndex?: number }) => void | Promise<void>
   onImageToolCompleted?: (image: AgentApiResultImage) => void | Promise<void>
   onImageToolFailed?: (event: AgentApiImageToolFailure) => void | Promise<void>
+  allowTextOnlyFallback?: boolean
 }): Promise<AgentApiResult> {
-  const { settings, profile, imageProfile = profile, params, input, maskDataUrl, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed } = opts
+  const { settings, profile, imageProfile = profile, params, input, toolsMode = 'auto', maskDataUrl, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed, allowTextOnlyFallback = true } = opts
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
@@ -756,43 +754,64 @@ export async function callAgentResponsesApi(opts: {
   signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
-    const body: Record<string, unknown> = {
-      model: settings.agentModel || profile.model || settings.model,
-      instructions: createAgentInstructions(settings, shouldUseExternalImageTool(profile, imageProfile)),
-      input,
-      tools: createAgentTools(params, profile, settings, maskDataUrl, imageProfile),
-    }
-    if (profile.streamImages) {
-      body.stream = true
+    const model = getAgentConversationModel(settings, profile)
+    const request = async (mode: 'full' | 'full-non-stream' | 'text-only'): Promise<AgentApiResult> => {
+      const useTools = mode !== 'text-only' && toolsMode !== 'none'
+      const useStream = mode === 'full' && Boolean(profile.streamImages)
+      const body: Record<string, unknown> = {
+        model,
+        instructions: useTools
+          ? createAgentInstructions(settings, true)
+          : createAgentTextOnlyFallbackInstructions(settings),
+        input,
+      }
+      if (useTools) body.tools = createAgentTools(settings)
+      if (useStream) body.stream = true
+
+      const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
+        method: 'POST',
+        headers: createHeaders(profile),
+        cache: 'no-store',
+        body: JSON.stringify(body),
+        signal: timeout.signal,
+      })
+
+      if (!response.ok) {
+        const errorMessage = await getApiErrorMessage(response)
+        throw new Error(maybeAppendStreamingHint(errorMessage, response.status, useStream))
+      }
+
+      if (useStream && isEventStreamResponse(response)) {
+        timeout.useIdleTimeout(getStreamIdleTimeoutMs(profile.timeout))
+        return parseAgentStreamResponse(response, mime, timeout.signal, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed, timeout.refresh)
+      }
+
+      const payload = await response.json() as ResponsesApiResponse
+      throwIfAborted(timeout.signal, signal)
+      return {
+        responseId: payload.id,
+        text: extractText(payload),
+        images: await extractImages(payload, mime, timeout.signal),
+        outputItems: payload.output,
+        rawResponsePayload: JSON.stringify(payload, null, 2),
+      }
     }
 
-    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
-      method: 'POST',
-      headers: createHeaders(profile),
-      cache: 'no-store',
-      body: JSON.stringify(body),
-      signal: timeout.signal,
-    })
-
-    if (!response.ok) {
-      const errorMessage = await getApiErrorMessage(response)
-      throw new Error(maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages))
+    try {
+      return await request('full')
+    } catch (error) {
+      if (toolsMode === 'none') throw error
+      if (timeout.signal.aborted || signal?.aborted || !shouldFallbackAgentResponsesRequest(error, Boolean(profile.streamImages))) throw error
     }
 
-    if (profile.streamImages && isEventStreamResponse(response)) {
-      timeout.useIdleTimeout(getStreamIdleTimeoutMs(profile.timeout))
-      return parseAgentStreamResponse(response, mime, timeout.signal, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed, timeout.refresh)
+    try {
+      return await request('full-non-stream')
+    } catch (error) {
+      if (timeout.signal.aborted || signal?.aborted || !shouldFallbackAgentResponsesRequest(error, true)) throw error
+      if (!allowTextOnlyFallback) throw error
     }
 
-    const payload = await response.json() as ResponsesApiResponse
-    throwIfAborted(timeout.signal, signal)
-    return {
-      responseId: payload.id,
-      text: extractText(payload),
-      images: await extractImages(payload, mime, timeout.signal),
-      outputItems: payload.output,
-      rawResponsePayload: JSON.stringify(payload, null, 2),
-    }
+    return request('text-only')
   } finally {
     timeout.clear()
     signal?.removeEventListener('abort', abortFromCaller)
@@ -828,7 +847,7 @@ export async function callAgentConversationTitleApi(opts: {
       headers: createHeaders(profile),
       cache: 'no-store',
       body: JSON.stringify({
-        model: settings.agentModel || profile.model || settings.model,
+        model: getAgentConversationModel(settings, profile),
         instructions: AGENT_TITLE_INSTRUCTIONS,
         input: [{ role: 'user', content }],
         max_output_tokens: 32,

@@ -53,7 +53,7 @@ import { useCloseOnEscape } from '../../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../../hooks/usePreventBackgroundScroll'
 import { DEFAULT_DROPDOWN_MAX_HEIGHT, getDropdownMaxHeight } from '../../lib/ui/dropdown'
 import { testVideoApiConnection } from '../../lib/video/videoApi'
-import { testOpenAICompatibleConnection } from '../../lib/api/apiConnection'
+import { testOpenAICompatibleConnection, type FetchedApiModel } from '../../lib/api/apiConnection'
 import Select from '../common/Select'
 import { Checkbox } from '../common/Checkbox'
 import ViewportTooltip from '../common/ViewportTooltip'
@@ -191,6 +191,11 @@ export default function SettingsModal() {
   const [isImportingData, setIsImportingData] = useState(false)
   const [isImportingJson, setIsImportingJson] = useState(false)
   const [isTestingApi, setIsTestingApi] = useState(false)
+  const [testedModelList, setTestedModelList] = useState<{
+    key: string
+    models: FetchedApiModel[]
+  } | null>(null)
+  const [showManualModelInput, setShowManualModelInput] = useState(false)
   const [draggedProfileId, setDraggedProfileId] = useState<string | null>(null)
   const [dragOverProfileId, setDragOverProfileId] = useState<string | null>(null)
   const [dragDropPosition, setDragDropPosition] = useState<'before' | 'after' | null>(null)
@@ -298,6 +303,41 @@ export default function SettingsModal() {
     return 'custom'
   }
 
+  const getModelListKey = (profile: ApiProfile) => [
+    profile.id,
+    profile.provider,
+    profile.apiMode ?? DEFAULT_SETTINGS.apiMode,
+    profile.baseUrl.trim(),
+    profile.apiKey.trim(),
+  ].join('|')
+
+  const getPreferredModelEndpointTypes = (profile: ApiProfile) => {
+    if (profile.provider !== 'openai') return []
+    if (profile.apiMode === 'responses') return ['openai-response', 'responses', 'response']
+    if (profile.apiMode === 'videos') return ['video', 'videos', 'video-generation', 'openai-video']
+    return ['openai', 'image-generation', 'images', 'image']
+  }
+
+  const getModelSelectOptions = (profile: ApiProfile, models: FetchedApiModel[]) => {
+    const preferredTypes = getPreferredModelEndpointTypes(profile)
+    const isPreferredModel = (model: FetchedApiModel) => {
+      if (!preferredTypes.length || !model.supportedEndpointTypes.length) return true
+      return model.supportedEndpointTypes.some((type) => preferredTypes.includes(type.toLowerCase()))
+    }
+    const visibleModels = [...models].sort((a, b) => Number(isPreferredModel(b)) - Number(isPreferredModel(a)))
+    const options = visibleModels.map((model) => ({
+      label: model.supportedEndpointTypes.length
+        ? `${model.id} · ${model.supportedEndpointTypes.join(', ')}`
+        : model.id,
+      value: model.id,
+    }))
+    const currentModel = profile.model.trim()
+    if (currentModel && !options.some((option) => option.value === currentModel)) {
+      options.unshift({ label: `当前填写：${currentModel}`, value: currentModel })
+    }
+    return options
+  }
+
   const callingFormatOptions: Array<{ label: string; value: CallingFormat }> = [
     { label: 'OpenAI Images', value: 'openai-images' },
     { label: 'OpenAI Responses', value: 'openai-responses' },
@@ -314,6 +354,10 @@ export default function SettingsModal() {
   const zipDownloadRouteSummary = enabledZipDownloadRouteCount
     ? `已开启 ${enabledZipDownloadRouteCount} 项使用压缩包进行批量下载的途径`
     : '未开启任何使用压缩包进行批量下载的途径'
+  const activeModelListKey = getModelListKey(activeProfile)
+  const hasTestedModelListForActiveProfile = testedModelList?.key === activeModelListKey
+  const activeTestedModels = hasTestedModelListForActiveProfile ? testedModelList.models : []
+  const activeModelSelectOptions = getModelSelectOptions(activeProfile, activeTestedModels)
 
   const wasSettingsOpenRef = useRef(false)
 
@@ -346,6 +390,10 @@ export default function SettingsModal() {
   useEffect(() => {
     setTimeoutInput(String(activeProfile.timeout))
   }, [activeProfile.id, activeProfile.timeout])
+
+  useEffect(() => {
+    setShowManualModelInput(false)
+  }, [activeModelListKey])
 
   useEffect(() => {
     if (showSettings && settingsTabRequest) setActiveTab(settingsTabRequest)
@@ -685,18 +733,27 @@ export default function SettingsModal() {
   const handleTestApiConnection = async () => {
     setIsTestingApi(true)
     try {
+      let result: { models: FetchedApiModel[] }
       if (activeProfile.apiMode === 'videos') {
-        await testVideoApiConnection({
+        result = await testVideoApiConnection({
           baseUrl: activeProfile.baseUrl,
           apiKey: activeProfile.apiKey,
         })
       } else {
-        await testOpenAICompatibleConnection({
+        result = await testOpenAICompatibleConnection({
           baseUrl: activeProfile.baseUrl,
           apiKey: activeProfile.apiKey,
+          apiMode: activeProfile.apiMode,
+          model: activeProfile.model,
         })
       }
-      showToast(activeProfile.apiMode === 'videos' ? '视频接口连接正常' : '接口连接正常', 'success')
+      setTestedModelList({
+        key: activeModelListKey,
+        models: result.models,
+      })
+      setShowManualModelInput(false)
+      const modelCountText = result.models.length ? `，已获取 ${result.models.length} 个模型` : '，但没有返回模型列表'
+      showToast(`${activeProfile.apiMode === 'videos' ? '视频接口连接正常' : '接口连接正常'}${modelCountText}`, 'success')
     } catch (error) {
       showToast(error instanceof Error ? error.message : '接口连接测试失败', 'error')
     } finally {
@@ -1442,7 +1499,7 @@ export default function SettingsModal() {
             {activeTab === 'agent' && (
               <div className="space-y-4">
                 <label className="block">
-                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">Agent 模型</span>
+                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">Agent 对话模型 ID</span>
                   <input
                     value={draft.agentModel}
                     onChange={(e) => commitSettings({ ...draft, agentModel: e.target.value })}
@@ -1450,7 +1507,7 @@ export default function SettingsModal() {
                     className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
                   />
                   <div data-selectable-text className="mt-1.5 text-xs leading-relaxed text-gray-500 dark:text-gray-500">
-                    Agent 对话、标题生成和批量生图会使用这个模型；默认推荐从 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_AGENT_MODEL}</code> 开始，baseUrl 和 API Key 仍复用当前 API 配置。
+                    只负责 Agent 的思考、对话、标题生成和工具调度；真正生图使用“Agent 生图配置”里的模型。默认推荐从 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_AGENT_MODEL}</code> 开始。
                   </div>
                 </label>
                 <label className="block">
@@ -1764,7 +1821,7 @@ export default function SettingsModal() {
                 <div className="mb-2">
                   <div className="text-sm font-medium text-blue-800 dark:text-blue-200">用途路由</div>
                   <div data-selectable-text className="mt-1 text-xs leading-5 text-blue-700/80 dark:text-blue-200/70">
-                    生图、Agent 对话和视频是三个独立用途，可以同时指定不同配置；未指定时按对应默认规则跟随。
+                    画廊生图、Agent 对话、Agent 生图和视频是独立用途。建议 Agent 对话使用稳定的 Responses 对话模型，Agent 生图单独选择图片模型，减少对话阶段失败。
                   </div>
                 </div>
                 <div className="grid gap-2 lg:grid-cols-2">
@@ -1789,7 +1846,7 @@ export default function SettingsModal() {
                     />
                   </label>
                   <label className="block">
-                    <span className="mb-1 block text-xs text-blue-700 dark:text-blue-200">Agent 默认配置</span>
+                    <span className="mb-1 block text-xs text-blue-700 dark:text-blue-200">Agent 对话配置</span>
                     <Select
                       value={effectiveAgentProfile?.id ?? '__missing_agent_profile__'}
                       onChange={(value) => {
@@ -1831,7 +1888,7 @@ export default function SettingsModal() {
                       className="w-full rounded-xl border border-blue-200/70 bg-white/80 px-3 py-2 text-xs text-gray-700 outline-none transition focus:border-blue-300 dark:border-blue-400/20 dark:bg-black/20 dark:text-gray-200"
                     />
                     <div data-selectable-text className="mt-1 text-[11px] leading-4 text-blue-700/70 dark:text-blue-200/60">
-                      只影响 Agent 里调用生图工具时用哪个 Key / Base URL / 模型，不影响 Agent 对话本身。
+                      只影响 Agent 调用生图工具时使用哪个 Key / Base URL / 图片模型，不影响 Agent 对话模型。
                     </div>
                   </label>
                   <label className="block">
@@ -2006,16 +2063,41 @@ export default function SettingsModal() {
 
               {/* 6. 模型 ID */}
               <div className="block">
-                <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">模型 ID</span>
-                <input
-                  value={activeProfile.model}
-                  onChange={(e) => updateActiveProfile({ model: e.target.value }, true)}
-                  onBlur={(e) => commitActiveProfilePatch({ model: e.target.value })}
-                  type="text"
-                  placeholder={activeProfile.provider === 'gemini' ? DEFAULT_GEMINI_MODEL : activeProfile.provider === 'grok' ? DEFAULT_GROK_MODEL : getDefaultModelForMode(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode)}
-                  className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
-                />
+                <div className="mb-1.5 flex items-center justify-between gap-3">
+                  <span className="block text-sm text-gray-600 dark:text-gray-300">模型 ID</span>
+                  {activeModelSelectOptions.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowManualModelInput((value) => !value)}
+                      className="text-xs font-medium text-blue-600 transition hover:text-blue-700 dark:text-blue-300 dark:hover:text-blue-200"
+                    >
+                      {showManualModelInput ? '使用下拉选择' : '手动填写'}
+                    </button>
+                  )}
+                </div>
+                {activeModelSelectOptions.length > 0 && !showManualModelInput ? (
+                  <Select
+                    value={activeProfile.model}
+                    onChange={(value) => updateActiveProfile({ model: String(value) }, true)}
+                    options={activeModelSelectOptions}
+                    className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
+                  />
+                ) : (
+                  <input
+                    value={activeProfile.model}
+                    onChange={(e) => updateActiveProfile({ model: e.target.value }, true)}
+                    onBlur={(e) => commitActiveProfilePatch({ model: e.target.value })}
+                    type="text"
+                    placeholder={activeProfile.provider === 'gemini' ? DEFAULT_GEMINI_MODEL : activeProfile.provider === 'grok' ? DEFAULT_GROK_MODEL : getDefaultModelForMode(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode)}
+                    className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
+                  />
+                )}
                 <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
+                  {activeProviderUsesApiUrl && !activeModelSelectOptions.length && (
+                    <span className="mb-1 block text-blue-600 dark:text-blue-300">
+                      点击下方“测试接口连接”后，如果接口返回模型列表，这里会自动变成下拉框。
+                    </span>
+                  )}
                   {activeProfile.provider === 'gemini' ? (
                     <>Google 官方地址会调用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">generateContent</code>；中转站地址会调用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">chat/completions</code>，模型名会按这里填写的原样发送。</>
                   ) : activeCustomProvider ? (
@@ -2042,7 +2124,7 @@ export default function SettingsModal() {
                     disabled={isTestingApi || !activeProfile.baseUrl.trim() || !activeProfile.apiKey.trim()}
                     className="mt-2 w-full rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-blue-600"
                   >
-                    {isTestingApi ? '测试中...' : activeProfile.apiMode === 'videos' ? '测试视频接口连接' : '测试生图接口连接'}
+                    {isTestingApi ? '测试中...' : '测试接口连接'}
                   </button>
                 </div>
               )}

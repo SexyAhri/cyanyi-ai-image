@@ -4,7 +4,7 @@ export function sanitizeProviderErrorMessage(message: string): string {
   const lower = text.toLowerCase()
 
   if (
-    /system under load|server overloaded|temporarily overloaded|service overloaded|over capacity|busy|try again later|our servers are currently overloaded/.test(lower) ||
+    /upstream service temporarily unavailable|temporarily unavailable|system under load|server overloaded|temporarily overloaded|service overloaded|over capacity|busy|try again later|our servers are currently overloaded/.test(lower) ||
     /服务繁忙|系统繁忙|负载|稍后重试/.test(text)
   ) {
     return '服务繁忙，请稍后重试'
@@ -18,7 +18,13 @@ export function sanitizeProviderErrorMessage(message: string): string {
     return '当前模型不支持所选秒数，请调整秒数，或切换支持该时长的模型。'
   }
 
-  if (/unsupported.*(image|reference|audio|video)|invalid.*(image|reference|audio|video)|reference.*not supported/.test(lower)) {
+  if (
+    /(unsupported|invalid).*(tool|function|image_generation|tool_choice)|tool.*(unsupported|invalid)|image_generation.*(unsupported|invalid|not supported)|model.*not support.*tool/.test(lower)
+  ) {
+    return '当前 Agent 对话模型不支持工具调用或图片生成工具，请把 Agent 默认配置切换为支持 Responses 工具调用的对话模型，生图模型请放在“Agent 生图配置”里。'
+  }
+
+  if (/unsupported.*(reference|audio|video)|invalid.*(reference|audio|video)|reference.*not supported/.test(lower)) {
     return '当前模型不支持所选参考素材，请移除参考图/视频/音频，或切换支持参考素材的模型。'
   }
 

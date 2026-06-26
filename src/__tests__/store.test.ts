@@ -2222,7 +2222,7 @@ describe('agent built-in image tool failure', () => {
     })
 
     await submitAgentMessage()
-    for (let i = 0; i < 20 && useStore.getState().agentConversations[0].rounds[0]?.status !== 'done'; i++) {
+    for (let i = 0; i < 20 && vi.mocked(createVideoGenerationTask).mock.calls.length === 0; i++) {
       await new Promise((resolve) => setTimeout(resolve, 0))
     }
 
@@ -2288,6 +2288,122 @@ describe('agent built-in image tool failure', () => {
     expect(assistantMessage?.content).toBe('图片已生成。')
     expect(assistantMessage?.content).not.toContain('Unauthorized')
     expect(assistantMessage?.outputTaskIds).toEqual([task.id])
+  })
+
+  it('lets Agent answer plain text while keeping media tools available for context', async () => {
+    vi.mocked(callBatchImageSingle).mockClear()
+    vi.mocked(callAgentResponsesApi).mockResolvedValueOnce({
+      text: '可以，我来帮你分析。',
+      images: [],
+      outputItems: [{ type: 'message', content: [{ type: 'output_text', text: '可以，我来帮你分析。' }] }],
+      responseId: 'plain-response',
+    })
+    useStore.setState({ prompt: '帮我分析一下这个项目还有哪些优化点' })
+
+    await submitAgentMessage()
+    for (let i = 0; i < 20 && useStore.getState().agentConversations[0].rounds[0]?.status !== 'done'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect(callAgentResponsesApi).toHaveBeenCalledTimes(1)
+    expect(callAgentResponsesApi).toHaveBeenCalledWith(expect.objectContaining({
+      toolsMode: 'auto',
+      allowTextOnlyFallback: true,
+    }))
+    expect(callBatchImageSingle).not.toHaveBeenCalled()
+    expect(useStore.getState().agentConversations[0].messages.find((message) => message.role === 'assistant')?.content)
+      .toBe('可以，我来帮你分析。')
+  })
+
+  it('falls back to direct Agent image generation when the planning request is temporarily unavailable', async () => {
+    vi.mocked(callAgentResponsesApi).mockRejectedValue(new Error('Upstream service temporarily unavailable'))
+    vi.mocked(callBatchImageSingle).mockClear()
+    vi.mocked(callBatchImageSingle).mockResolvedValue({
+      batchItemId: 'image',
+      image: { dataUrl: 'data:image/png;base64,direct-output', revisedPrompt: '生成一张测试图片' },
+      error: null,
+    })
+    useStore.setState({ prompt: '生成一张测试图片' })
+
+    await submitAgentMessage()
+    for (let i = 0; i < 20 && useStore.getState().agentConversations[0].rounds[0]?.status !== 'done'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    const state = useStore.getState()
+    const task = state.tasks[0]
+    const assistantMessage = state.agentConversations[0].messages.find((message) => message.role === 'assistant')
+
+    expect(callAgentResponsesApi).toHaveBeenCalledTimes(1)
+    expect(callBatchImageSingle).toHaveBeenCalledTimes(1)
+    expect(callBatchImageSingle).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: '生成一张测试图片',
+    }))
+    expect(task).toMatchObject({
+      status: 'done',
+      sourceMode: 'agent',
+      outputImages: expect.any(Array),
+    })
+    expect(assistantMessage?.outputTaskIds).toEqual([task.id])
+  })
+
+  it('keeps media tools enabled for referenced follow-up image edits', async () => {
+    await putImage(imageA)
+    vi.mocked(callBatchImageSingle).mockClear()
+    vi.mocked(callAgentResponsesApi).mockResolvedValueOnce({
+      text: 'I will prepare the edit.',
+      images: [],
+      outputItems: [{ type: 'message', content: [{ type: 'output_text', text: 'I will prepare the edit.' }] }],
+      responseId: 'edit-response',
+    })
+    useStore.setState({
+      prompt: '@第1轮图1 换一个商品',
+      tasks: [
+        task({
+          id: 'task-round-1',
+          outputImages: [imageA.id],
+          sourceMode: 'agent',
+          agentRoundId: 'round-1',
+          agentMessageId: 'assistant-1',
+          agentToolCallId: 'image-call-1',
+        }),
+      ],
+      agentConversations: [agentConversation({
+        id: 'conversation-a',
+        activeRoundId: 'round-1',
+        rounds: [{
+          id: 'round-1',
+          index: 1,
+          parentRoundId: null,
+          userMessageId: 'user-1',
+          assistantMessageId: 'assistant-1',
+          prompt: 'draw a product',
+          inputImageIds: [],
+          outputTaskIds: ['task-round-1'],
+          status: 'done',
+          error: null,
+          createdAt: 1,
+          finishedAt: 2,
+        }],
+        messages: [
+          { id: 'user-1', role: 'user', content: 'draw a product', roundId: 'round-1', createdAt: 1 },
+          { id: 'assistant-1', role: 'assistant', content: 'done', roundId: 'round-1', outputTaskIds: ['task-round-1'], createdAt: 2 },
+        ],
+      })],
+      activeAgentConversationId: 'conversation-a',
+    })
+
+    await submitAgentMessage()
+    for (let i = 0; i < 20 && useStore.getState().agentConversations[0].rounds[1]?.status !== 'done'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect(callAgentResponsesApi).toHaveBeenCalledTimes(1)
+    expect(callAgentResponsesApi).toHaveBeenCalledWith(expect.objectContaining({
+      toolsMode: 'auto',
+      allowTextOnlyFallback: false,
+    }))
+    expect(callBatchImageSingle).not.toHaveBeenCalled()
   })
 
   it('lets Agent generate video with the video API profile and keeps the result when follow-up text fails', async () => {
@@ -2394,6 +2510,83 @@ describe('agent built-in image tool failure', () => {
     expect(createVideoGenerationTask).toHaveBeenCalledWith(
       expect.objectContaining({ apiKey: 'video-key' }),
       'make this product rotate slowly',
+      [imageA.dataUrl],
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    const completedVideo = (await getAllVideoRecords()).find((record) => record.status === 'success')
+    expect(completedVideo).toMatchObject({
+      referenceImageIds: [imageA.id],
+      referenceImageCount: 1,
+    })
+  })
+
+  it('passes referenced history images into Agent video generation', async () => {
+    await putImage(imageA)
+    useStore.setState({
+      tasks: [
+        task({
+          id: 'task-history-image',
+          outputImages: [imageA.id],
+          sourceMode: 'agent',
+          agentRoundId: 'round-history',
+          agentMessageId: 'assistant-history',
+          agentToolCallId: 'image-history-call',
+        }),
+      ],
+      agentConversations: [agentConversation({
+        id: 'conversation-a',
+        activeRoundId: 'round-history',
+        rounds: [{
+          id: 'round-history',
+          index: 1,
+          parentRoundId: null,
+          userMessageId: 'user-history',
+          assistantMessageId: 'assistant-history',
+          prompt: 'draw product',
+          inputImageIds: [],
+          outputTaskIds: ['task-history-image'],
+          status: 'done',
+          error: null,
+          createdAt: 1,
+          finishedAt: 2,
+        }],
+        messages: [
+          { id: 'user-history', role: 'user', content: 'draw product', roundId: 'round-history', createdAt: 1 },
+          { id: 'assistant-history', role: 'assistant', content: 'done', roundId: 'round-history', outputTaskIds: ['task-history-image'], createdAt: 2 },
+        ],
+      })],
+      activeAgentConversationId: 'conversation-a',
+    })
+    vi.mocked(callAgentResponsesApi)
+      .mockResolvedValueOnce({
+        text: '',
+        images: [],
+        outputItems: [{
+          type: 'function_call',
+          name: 'generate_video',
+          call_id: 'video-call-history',
+          arguments: JSON.stringify({
+            prompt: '@第1轮图1 把这个商品生成动感视频',
+            seconds: '6',
+          }),
+        }],
+        responseId: 'response-before-video-history',
+      })
+      .mockResolvedValueOnce({
+        text: 'ok',
+        images: [],
+        outputItems: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
+        responseId: 'response-after-video-history',
+      })
+
+    await submitAgentMessage()
+    for (let i = 0; i < 20 && useStore.getState().agentConversations[0].rounds[0]?.status !== 'done'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect(createVideoGenerationTask).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: 'video-key' }),
+      '@第1轮图1 把这个商品生成动感视频',
       [imageA.dataUrl],
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )

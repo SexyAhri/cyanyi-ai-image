@@ -154,4 +154,24 @@ describe('videoApi', () => {
       retryAfterMs: 7000,
     })
   })
+
+  it('returns JSON polling progress when the video task is still running', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'queued',
+        progress: 75,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(pollVideoGenerationTask(config, {
+      id: 'video-task-6',
+      model: config.model,
+    })).resolves.toEqual({
+      status: 'pending',
+      progress: 75,
+    })
+  })
 })

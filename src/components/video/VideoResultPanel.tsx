@@ -17,6 +17,14 @@ export function VideoResultPanel({
   onReuse: (record: VideoGenerationRecord) => void
   onRetry: (record: VideoGenerationRecord) => void
 }) {
+  const progress = Math.max(0, Math.min(100, Math.round(
+    activeRecord?.status === 'success'
+      ? 100
+      : activeRecord?.status === 'queued'
+        ? 0
+        : (activeRecord?.progress ?? 8),
+  )))
+
   return (
     <section className="cy-video-result">
       <div className="cy-video-card-title">
@@ -47,7 +55,10 @@ export function VideoResultPanel({
       ) : activeRecord?.status === 'running' || hasRunningTask ? (
         <div className="cy-video-pending">
           <div />
-          <span>{activeRecord?.status === 'queued' ? '任务已排队，等待前一个视频完成' : '视频生成中，通常需要几十秒到几分钟'}</span>
+          <span>{activeRecord?.status === 'queued' ? '任务已排队，等待前一个视频完成' : `视频生成中 ${progress}%`}</span>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200/80">
+            <div className="h-full rounded-full bg-blue-500 transition-all duration-500" style={{ width: `${Math.max(4, progress)}%` }} />
+          </div>
         </div>
       ) : (
         <div className="cy-video-empty">

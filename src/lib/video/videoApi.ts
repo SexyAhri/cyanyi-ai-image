@@ -7,6 +7,7 @@ import {
   getStreamIdleTimeoutMs,
   isHttpUrl,
 } from '../api/imageApiShared'
+import { parseModelList, type ApiConnectionTestResult } from '../api/apiConnection'
 import { sanitizeProviderErrorMessage } from '../api/providerErrors'
 import { getVideoModelPreset, normalizeVideoSecondsForPreset, normalizeVideoSizeForModel, supportsVideoReferenceImages } from './videoModels'
 
@@ -39,7 +40,7 @@ export type VideoRequestOptions = {
 }
 
 export type VideoGenerationState =
-  | { status: 'pending'; retryAfterMs?: number }
+  | { status: 'pending'; retryAfterMs?: number; progress?: number }
   | { status: 'completed'; video: GeneratedVideoAsset }
   | { status: 'failed'; error: string }
 
@@ -192,7 +193,7 @@ export async function pollVideoGenerationTask(config: VideoGenerationConfig, tas
     const message = typeof error === 'string' && error.trim() ? error : '视频生成失败'
     return { status: 'failed', error: sanitizeProviderErrorMessage(message) }
   }
-  if (status !== 'completed') return { status: 'pending', retryAfterMs: getRetryAfterMs(data) }
+  if (status !== 'completed') return { status: 'pending', retryAfterMs: getRetryAfterMs(data), progress: getProgress(data) }
 
   const directVideo = await createVideoAssetFromPayload(data, config, options.signal)
   if (directVideo) return { status: 'completed', video: directVideo }
@@ -546,6 +547,32 @@ function getRetryAfterMs(value: unknown): number | undefined {
   return undefined
 }
 
+function getProgress(value: unknown): number | undefined {
+  if (!value) return undefined
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const progress = getProgress(item)
+      if (progress != null) return progress
+    }
+    return undefined
+  }
+  if (typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  for (const key of ['progress', 'percent', 'percentage', 'progress_percent', 'progressPercent']) {
+    const raw = record[key]
+    if (typeof raw === 'number' && Number.isFinite(raw)) return Math.max(0, Math.min(100, Math.round(raw)))
+    if (typeof raw === 'string') {
+      const parsed = Number(raw.replace('%', '').trim())
+      if (Number.isFinite(parsed)) return Math.max(0, Math.min(100, Math.round(parsed)))
+    }
+  }
+  for (const key of ['data', 'result', 'task', 'output']) {
+    const progress = getProgress(record[key])
+    if (progress != null) return progress
+  }
+  return undefined
+}
+
 function extractVideoUrlFromText(text: string) {
   const markdown = text.match(/!?\[[^\]]*]\((https?:\/\/[^)\s]+\.(?:mp4|webm|mov|m4v)(?:\?[^)\s]*)?)\)/i)
   if (markdown?.[1]) return markdown[1]
@@ -664,7 +691,7 @@ async function dataUrlToFile(dataUrl: string, filename: string) {
   return new File([blob], filename, { type: mime })
 }
 
-export async function testVideoApiConnection(config: Pick<VideoGenerationConfig, 'baseUrl' | 'apiKey'>, options: VideoRequestOptions = {}) {
+export async function testVideoApiConnection(config: Pick<VideoGenerationConfig, 'baseUrl' | 'apiKey'>, options: VideoRequestOptions = {}): Promise<ApiConnectionTestResult> {
   if (!config.baseUrl.trim()) throw new Error('请先填写 Base URL')
   if (!config.apiKey.trim()) throw new Error('请先填写 API Key')
   const response = await fetch(buildVideoApiUrl(config.baseUrl, '/models'), {
@@ -675,7 +702,9 @@ export async function testVideoApiConnection(config: Pick<VideoGenerationConfig,
     signal: options.signal,
   })
   if (!response.ok) throw new Error(await readApiError(response, '连接测试失败'))
-  return true
+  return {
+    models: parseModelList(await response.json().catch(() => null)),
+  }
 }
 
 function delay(ms: number, signal?: AbortSignal) {

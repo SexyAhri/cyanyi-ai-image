@@ -16,7 +16,7 @@ import {
   normalizeSettings,
   validateApiProfile,
 } from "../../lib/api/apiProfiles";
-import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, parseSingleImageCallArguments, parseVideoCallArguments, type AgentApiResultImage } from "../../lib/agent/agentApi";
+import { callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, parseSingleImageCallArguments, parseVideoCallArguments, type AgentApiResultImage } from "../../lib/agent/agentApi";
 import { putVideoRecord } from "../../lib/storage/db";
 import { createVideoConfigFromProfile, createVideoGenerationTask, pollVideoGenerationTask, type VideoGenerationTask } from "../../lib/video/videoApi";
 import { POLL_INTERVAL_MS, stripTransientVideoUrl } from "../../lib/video/videoWorkspaceUtils";
@@ -34,6 +34,7 @@ import {
 } from "../../lib/agent/agentPayload";
 import {
   collectAgentRoundOutputImageSlots,
+  extractAgentPromptReferenceIds,
   extractAgentReferenceIds,
   getAgentCurrentReferenceId,
   getAgentGeneratedImageReferenceId,
@@ -100,7 +101,8 @@ function sleep(ms: number, signal?: AbortSignal) {
 function isRetryableAgentTemporaryError(err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
   const lower = message.toLowerCase();
-  return /auth_unavailable|no auth available|system under load|server overloaded|temporarily overloaded|service overloaded|over capacity|busy|try again later|our servers are currently overloaded/.test(lower);
+  return /auth_unavailable|no auth available|upstream service temporarily unavailable|temporarily unavailable|system under load|server overloaded|temporarily overloaded|service overloaded|over capacity|busy|try again later|our servers are currently overloaded/.test(lower) ||
+    /服务繁忙|系统繁忙|负载|稍后重试|临时不可用|暂时不可用|暂时无法完成请求|请求被限流/.test(message);
 }
 
 function createAgentConversationTitle(prompt: string, fallbackTitle: string) {
@@ -309,8 +311,6 @@ async function generateAgentConversationTitle(
   conversationId: string,
   prompt: string,
   inputImageIds: string[],
-  requestSettings: AppSettings,
-  activeProfile: ApiProfile,
   fallbackTitle: string,
 ) {
   deps.setState((state) => {
@@ -321,17 +321,7 @@ async function generateAgentConversationTitle(
     return { agentGeneratingTitleIds: next };
   });
   try {
-    const imageDataUrls = await readAgentContextImageDataUrls(inputImageIds, {
-      maxWidth: 768,
-      maxHeight: 768,
-      maxEncodedBytesPerImage: 450_000,
-    });
-    const title = await callAgentConversationTitleApi({
-      settings: requestSettings,
-      profile: activeProfile,
-      prompt,
-      imageDataUrls,
-    });
+    const title = createAgentConversationTitle(prompt, fallbackTitle);
     if (!title || title === fallbackTitle) return;
 
     updateAgentConversation(conversationId, (current) => {
@@ -387,6 +377,62 @@ function stopAgentResponse(
 
 function uniqueIds(ids: string[]) {
   return Array.from(new Set(ids.filter(Boolean)));
+}
+
+function isLikelyImageGenerationPrompt(prompt: string) {
+  return /(?:生成|画|绘制|出图|生图|图片|图像|海报|照片|插画|头像|商品图|主图|详情图|draw|image|photo|picture|poster|illustration)/i.test(prompt);
+}
+
+function isLikelyImageEditPrompt(prompt: string) {
+  return /(?:换|替换|改|修改|变|变成|调整|重做|重新|换成|改成|换个|换一|颜色|背景|商品|产品|衣服|裤子|鞋|包|模特|场景|风格|姿势|角度|edit|change|replace|modify|turn into|make it|recolor|background|product|style)/i.test(prompt);
+}
+
+function hasAgentImageReferenceMention(prompt: string) {
+  return /@第\s*\d+\s*轮图\s*\d+|<ref\b/i.test(prompt);
+}
+
+function isLikelyVideoGenerationPrompt(prompt: string) {
+  return /(?:视频|动画|短片|短视频|动图|运镜|镜头|video|clip|animation|animate|motion)/i.test(prompt);
+}
+
+function createDirectMediaFunctionCall(
+  prompt: string,
+  options: { hasImageContext?: boolean } = {},
+): ResponsesOutputItem | null {
+  const normalizedPrompt = prompt.trim();
+  if (!normalizedPrompt) return null;
+  if (isLikelyVideoGenerationPrompt(normalizedPrompt)) {
+    return {
+      type: "function_call",
+      name: "generate_video",
+      call_id: `direct-video-${genId()}`,
+      arguments: JSON.stringify({ prompt: normalizedPrompt }),
+    };
+  }
+  const shouldUseImageTool =
+    isLikelyImageGenerationPrompt(normalizedPrompt) ||
+    (isLikelyImageEditPrompt(normalizedPrompt) &&
+      (options.hasImageContext || hasAgentImageReferenceMention(normalizedPrompt)));
+  if (shouldUseImageTool) {
+    return {
+      type: "function_call",
+      name: "generate_image",
+      call_id: `direct-image-${genId()}`,
+      arguments: JSON.stringify({ prompt: normalizedPrompt }),
+    };
+  }
+  return null;
+}
+
+function canUseDirectMediaFallback(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  if (isAgentContextSizeLimitError(error)) return false;
+  if (/image_generation failed|safety rejected|invalid or empty|request body exceeds|5mb|too large|context/i.test(message)) {
+    return false;
+  }
+  return isRetryableAgentTemporaryError(error) ||
+    /upstream|bad gateway|gateway|timeout|temporarily unavailable|502|503|504|524/.test(lower);
 }
 
 async function submitAgentMessage() {
@@ -601,8 +647,6 @@ async function submitAgentMessage() {
       conversation.id,
       trimmedPrompt,
       inputImageIds,
-      requestSettings,
-      activeProfile,
       fallbackTitle,
     );
   }
@@ -1071,6 +1115,7 @@ async function executeAgentRound(
     let reachedImageToolFailureLimit = false;
     let consecutiveImageToolFailureRounds = 0;
     let pendingToolTextSeparator = false;
+    let usedDirectMediaFallback = false;
 
     // Helper: resolve reference image ids to data URLs for batch image calls
     const resolveReferenceImages = async (
@@ -1122,7 +1167,14 @@ async function executeAgentRound(
         return JSON.stringify({ error: "Invalid or empty image arguments" });
       }
 
-      const referenceIds = uniqueIds(extractAgentReferenceIds(item.prompt));
+      const referenceIds = uniqueIds([
+        ...extractAgentReferenceIds(item.prompt),
+        ...extractAgentPromptReferenceIds(
+          item.prompt,
+          getAgentRoundPath(conversation, roundId),
+          deps.getState().tasks,
+        ),
+      ]);
       const references = await resolveReferenceImages(referenceIds);
       const toolCallId = functionCallItem.call_id || genId();
       await ensureStreamingAgentTask(
@@ -1176,11 +1228,17 @@ async function executeAgentRound(
 
       toolCallsUsed += 1;
 
-      if (result.image && !shouldStreamImagePreviews) {
-        await completeAgentImageTask(
-          { ...result.image, toolCallId },
-          result.rawResponsePayload,
-        );
+      if (result.image) {
+        const taskId = taskIdByToolCallId.get(toolCallId);
+        const currentTask = taskId
+          ? deps.getState().tasks.find((task) => task.id === taskId)
+          : undefined;
+        if (!currentTask || currentTask.status !== "done") {
+          await completeAgentImageTask(
+            { ...result.image, toolCallId },
+            result.rawResponsePayload,
+          );
+        }
       }
 
       if (!result.image) {
@@ -1397,7 +1455,14 @@ async function executeAgentRound(
         size: item.size ?? "1280x720",
         resolution: item.resolution ?? "720p",
       });
-      const referenceIds = uniqueIds(extractAgentReferenceIds(item.prompt));
+      const referenceIds = uniqueIds([
+        ...extractAgentReferenceIds(item.prompt),
+        ...extractAgentPromptReferenceIds(
+          item.prompt,
+          getAgentRoundPath(conversation, roundId),
+          deps.getState().tasks,
+        ),
+      ]);
       const explicitReferences = await resolveReferenceImages(referenceIds);
       const currentRoundReferenceDataUrls = explicitReferences.dataUrls.length > 0
         ? explicitReferences.dataUrls
@@ -1423,6 +1488,7 @@ async function executeAgentRound(
         referenceImageIds: currentRoundReferenceImageIds,
         referenceImageCount: currentRoundReferenceDataUrls.length,
         status: "running" as const,
+        progress: 0,
       };
       await putVideoRecord(stripTransientVideoUrl(baseRecord));
       attachVideoRecordToAgentRound(recordId);
@@ -1441,6 +1507,7 @@ async function executeAgentRound(
             ...baseRecord,
             task,
             status: "success" as const,
+            progress: 100,
             video: {
               dataUrl: video.dataUrl,
               remoteUrl: video.url?.startsWith("http") ? video.url : undefined,
@@ -1471,6 +1538,13 @@ async function executeAgentRound(
             return finishVideoRecord(state.video);
           }
           if (state.status === "failed") throw new Error(state.error);
+          if (state.progress != null) {
+            await putVideoRecord(stripTransientVideoUrl({
+              ...baseRecord,
+              task,
+              progress: state.progress,
+            }));
+          }
           await sleep(Math.min(state.retryAfterMs ?? POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())), controller.signal);
         }
 
@@ -1585,6 +1659,11 @@ async function executeAgentRound(
             }
           : undefined,
       };
+      const directFallbackPrompt = round.prompt || userMessage.content;
+      const directFallbackCall = createDirectMediaFunctionCall(directFallbackPrompt, {
+        hasImageContext: round.inputImageIds.length > 0,
+      });
+      const agentToolsMode = "auto";
       const callAgentWithTemporaryRetry = async (
         input: unknown,
       ): Promise<Awaited<ReturnType<typeof callAgentResponsesApi>>> => {
@@ -1593,8 +1672,17 @@ async function executeAgentRound(
             return await callAgentResponsesApi({
               ...requestOptions,
               input,
+              toolsMode: agentToolsMode,
+              allowTextOnlyFallback: !directFallbackCall,
             });
           } catch (error) {
+            if (
+              attempt === 0 &&
+              directFallbackCall &&
+              canUseDirectMediaFallback(error)
+            ) {
+              throw error;
+            }
             const delay = AGENT_TEMPORARY_ERROR_RETRY_DELAYS_MS[attempt];
             if (
               delay == null ||
@@ -1627,6 +1715,31 @@ async function executeAgentRound(
       try {
         result = await callAgentWithTemporaryRetry(apiInputForTurn);
       } catch (error) {
+        const directMediaCall = accumulatedOutputItems.length === 0 && toolCallsUsed === 0 && streamingTaskIds.length === 0
+          ? directFallbackCall
+          : null;
+        if (directMediaCall && canUseDirectMediaFallback(error)) {
+          const safeMessage = sanitizeProviderErrorMessage(
+            error instanceof Error ? error.message : String(error),
+          );
+          deps.getState().addAgentDiagnosticLog({
+            level: "warning",
+            scope: "agent",
+            message: `Agent planning failed, using direct media fallback: ${safeMessage}`,
+            detail: {
+              conversationId,
+              roundId,
+              fallbackTool: directMediaCall.name,
+            },
+          });
+          result = {
+            text: "",
+            images: [],
+            outputItems: [directMediaCall],
+            rawResponsePayload: deps.getRawErrorPayload(error).rawResponsePayload,
+          };
+          usedDirectMediaFallback = true;
+        } else {
         if (!isAgentContextSizeLimitError(error)) throw error;
         const reducedInput = buildReducedAgentInput(
           apiInputForTurn,
@@ -1666,6 +1779,7 @@ async function executeAgentRound(
           throw retryError;
         });
         apiInputForTurn = reducedInput;
+        }
       }
       if (controller.signal.aborted) throw createAgentAbortError();
 
@@ -1891,6 +2005,11 @@ async function executeAgentRound(
           ),
       }));
 
+      if (usedDirectMediaFallback) {
+        accumulatedOutputItems = accumulatedOutputItemsWithFunctionOutputs;
+        break;
+      }
+
       if (
         consecutiveImageToolFailureRounds >=
         AGENT_MAX_CONSECUTIVE_IMAGE_TOOL_FAILURE_ROUNDS
@@ -1955,7 +2074,7 @@ async function executeAgentRound(
       roundId,
       "内置 image_generation 工具未返回图片",
       undefined,
-      (task) => Boolean(task.agentToolCallId && !task.agentBatchCallId),
+      (task) => Boolean(task.agentToolCallId && !task.agentBatchCallId && !task.agentToolCallId.startsWith("direct-")),
     );
 
     const taskIds: string[] = [...streamingTaskIds];
