@@ -282,6 +282,13 @@ export default function SettingsModal() {
     return profile.apiMode
   }
 
+  const isImageGenerationProfile = (profile: ApiProfile) =>
+    !(profile.provider === 'openai' && profile.apiMode === 'videos')
+  const isVideoGenerationProfile = (profile: ApiProfile) =>
+    profile.provider === 'openai' && profile.apiMode === 'videos'
+  const imageGenerationProfiles = draft.profiles.filter(isImageGenerationProfile)
+  const videoGenerationProfiles = draft.profiles.filter(isVideoGenerationProfile)
+
   const getCallingFormat = (profile: ApiProfile): CallingFormat => {
     if (profile.provider === 'gemini') return 'gemini'
     if (profile.provider === 'grok') return 'grok'
@@ -1522,7 +1529,7 @@ export default function SettingsModal() {
                   <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                     {draft.profiles.map(profile => {
                       const isActiveProfile = profile.id === activeProfile.id
-                      const canDeleteProfile = draft.profiles.length > 2 && profile.id !== draft.galleryProfileId && profile.id !== draft.agentProfileId && profile.id !== draft.videoProfileId
+                      const canDeleteProfile = draft.profiles.length > 2 && profile.id !== draft.galleryProfileId && profile.id !== draft.agentProfileId && profile.id !== draft.agentImageProfileId && profile.id !== draft.videoProfileId
                       return (
                         <div
                           key={profile.id}
@@ -1715,7 +1722,7 @@ export default function SettingsModal() {
                                   >
                                     <LinkIcon className="h-3.5 w-3.5" />
                                   </button>
-                                  {draft.profiles.length > 2 && profile.id !== draft.galleryProfileId && profile.id !== draft.agentProfileId && profile.id !== draft.videoProfileId && (
+                                  {draft.profiles.length > 2 && profile.id !== draft.galleryProfileId && profile.id !== draft.agentProfileId && profile.id !== draft.agentImageProfileId && profile.id !== draft.videoProfileId && (
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -1757,10 +1764,10 @@ export default function SettingsModal() {
                 <div className="mb-2">
                   <div className="text-sm font-medium text-blue-800 dark:text-blue-200">用途路由</div>
                   <div data-selectable-text className="mt-1 text-xs leading-5 text-blue-700/80 dark:text-blue-200/70">
-                    可以让图片生成和 Agent 使用不同 API 配置/渠道；未指定时会跟随当前配置。
+                    生图、Agent 对话和视频是三个独立用途，可以同时指定不同配置；未指定时按对应默认规则跟随。
                   </div>
                 </div>
-                <div className="grid gap-2 lg:grid-cols-4">
+                <div className="grid gap-2 lg:grid-cols-2">
                   <label className="block">
                     <span className="mb-1 block text-xs text-blue-700 dark:text-blue-200">图片生成默认配置</span>
                     <Select
@@ -1773,7 +1780,7 @@ export default function SettingsModal() {
                       }}
                       options={[
                         { label: `跟随当前配置（${activeProfile.name}）`, value: '__current__' },
-                        ...draft.profiles.map((profile) => ({
+                        ...imageGenerationProfiles.map((profile) => ({
                           label: `${profile.name} · ${getApiProviderLabel(draft, profile.provider)} · ${getProfileUsageLabel(profile)}`,
                           value: profile.id,
                         })),
@@ -1816,7 +1823,7 @@ export default function SettingsModal() {
                       }}
                       options={[
                         { label: `跟随 Agent 配置（${effectiveAgentProfile?.name ?? '未配置 Responses'}）`, value: '__agent__' },
-                        ...draft.profiles.map((profile) => ({
+                        ...imageGenerationProfiles.map((profile) => ({
                           label: `${profile.name} - ${getApiProviderLabel(draft, profile.provider)} - ${getProfileUsageLabel(profile)}`,
                           value: profile.id,
                         })),
@@ -1824,7 +1831,7 @@ export default function SettingsModal() {
                       className="w-full rounded-xl border border-blue-200/70 bg-white/80 px-3 py-2 text-xs text-gray-700 outline-none transition focus:border-blue-300 dark:border-blue-400/20 dark:bg-black/20 dark:text-gray-200"
                     />
                     <div data-selectable-text className="mt-1 text-[11px] leading-4 text-blue-700/70 dark:text-blue-200/60">
-                      Agent 大脑仍使用上面的 Responses 配置，实际出图可单独选择 Images、Gemini/banana 或自定义接口。
+                      只影响 Agent 里调用生图工具时用哪个 Key / Base URL / 模型，不影响 Agent 对话本身。
                     </div>
                   </label>
                   <label className="block">
@@ -1838,8 +1845,10 @@ export default function SettingsModal() {
                         })
                       }}
                       options={[
-                        { label: `跟随当前配置（${activeProfile.name}）`, value: '__current__' },
-                        ...draft.profiles.map((profile) => ({
+                        ...(videoGenerationProfiles.length
+                          ? [{ label: `自动选择视频配置（${videoRoutedProfile?.name ?? videoGenerationProfiles[0]?.name ?? activeProfile.name}）`, value: '__current__' }]
+                          : [{ label: '需要新建 Videos API 配置', value: '__current__' }]),
+                        ...videoGenerationProfiles.map((profile) => ({
                           label: `${profile.name} - ${getApiProviderLabel(draft, profile.provider)} - ${getProfileUsageLabel(profile)}`,
                           value: profile.id,
                         })),
@@ -1847,7 +1856,7 @@ export default function SettingsModal() {
                       className="w-full rounded-xl border border-blue-200/70 bg-white/80 px-3 py-2 text-xs text-gray-700 outline-none transition focus:border-blue-300 dark:border-blue-400/20 dark:bg-black/20 dark:text-gray-200"
                     />
                     <div data-selectable-text className="mt-1 text-[11px] leading-4 text-blue-700/70 dark:text-blue-200/60">
-                      视频创作台会优先使用这里选择的 Videos API / 兼容视频接口配置。
+                      只影响视频创作台和 Agent 里的视频生成工具；可以和 Agent 生图配置同时启用。
                     </div>
                   </label>
                 </div>

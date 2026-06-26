@@ -318,6 +318,8 @@ export interface VideoGenerationRecord {
     timeout?: number
     stream?: boolean
   }
+  referenceImageIds?: string[]
+  referenceImageCount?: number
   status: 'queued' | 'running' | 'success' | 'failed' | 'cancelled'
   task?: {
     id: string
@@ -358,6 +360,7 @@ export interface AgentMessage {
   maskTargetImageId?: string | null
   maskImageId?: string | null
   outputTaskIds?: string[]
+  outputVideoRecordIds?: string[]
   createdAt: number
 }
 
@@ -372,6 +375,7 @@ export interface AgentRound {
   maskTargetImageId?: string | null
   maskImageId?: string | null
   outputTaskIds: string[]
+  outputVideoRecordIds?: string[]
   responseId?: string
   responseOutput?: ResponsesOutputItem[]
   status: AgentRoundStatus

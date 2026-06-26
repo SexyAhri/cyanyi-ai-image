@@ -12,10 +12,14 @@ import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from "../../types";
 import {
   getAgentApiProfile,
   getAgentImageApiProfile,
+  getVideoApiProfile,
   normalizeSettings,
   validateApiProfile,
 } from "../../lib/api/apiProfiles";
-import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, parseSingleImageCallArguments, type AgentApiResultImage } from "../../lib/agent/agentApi";
+import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, parseSingleImageCallArguments, parseVideoCallArguments, type AgentApiResultImage } from "../../lib/agent/agentApi";
+import { putVideoRecord } from "../../lib/storage/db";
+import { createVideoConfigFromProfile, createVideoGenerationTask, pollVideoGenerationTask, type VideoGenerationTask } from "../../lib/video/videoApi";
+import { POLL_INTERVAL_MS, stripTransientVideoUrl } from "../../lib/video/videoWorkspaceUtils";
 import {
   buildAgentApiInput,
   buildReducedAgentInput,
@@ -221,6 +225,16 @@ function getAgentRoundSuccessfulOutputIds(
     outputIds.push(...task.outputImages);
   }
   return { taskIds, outputIds };
+}
+
+function getAgentRoundSuccessfulVideoRecordIds(
+  conversationId: string,
+  roundId: string,
+) {
+  return deps.getState()
+    .agentConversations.find((item) => item.id === conversationId)
+    ?.rounds.find((round) => round.id === roundId)
+    ?.outputVideoRecordIds ?? [];
 }
 
 function markAgentRoundStopped(conversationId: string, roundId: string) {
@@ -784,6 +798,11 @@ async function executeAgentRound(
   agentImageProfile: ApiProfile,
 ) {
   const startedAt = Date.now();
+  const completedVideoRecordIds: string[] = [];
+  const videoProfile = getVideoApiProfile(requestSettings);
+  const videoValidationError = videoProfile.provider === "openai" && videoProfile.apiMode === "videos"
+    ? validateApiProfile(videoProfile)
+    : null;
   deps.getState().addAgentDiagnosticLog({
     level: "info",
     scope: "agent",
@@ -1330,6 +1349,144 @@ async function executeAgentRound(
       return JSON.stringify({ images: outputImages });
     };
 
+    const attachVideoRecordToAgentRound = (recordId: string) => {
+      updateAgentConversation(conversationId, (current) => ({
+        ...current,
+        updatedAt: Date.now(),
+        rounds: current.rounds.map((round) =>
+          round.id === roundId
+            ? {
+                ...round,
+                outputVideoRecordIds: uniqueIds([
+                  ...(round.outputVideoRecordIds ?? []),
+                  recordId,
+                ]),
+              }
+            : round,
+        ),
+        messages: current.messages.map((message) =>
+          message.id === assistantMessageId
+            ? {
+                ...message,
+                outputVideoRecordIds: uniqueIds([
+                  ...(message.outputVideoRecordIds ?? []),
+                  recordId,
+                ]),
+              }
+            : message,
+        ),
+      }));
+    };
+
+    const executeVideoFunctionCall = async (
+      functionCallItem: ResponsesOutputItem,
+    ): Promise<string> => {
+      const item = parseVideoCallArguments(functionCallItem.arguments ?? "");
+      if (!item) return JSON.stringify({ error: "Invalid or empty video arguments" });
+      if (videoValidationError || videoProfile.provider !== "openai" || videoProfile.apiMode !== "videos") {
+        return JSON.stringify({
+          video: {
+            status: "error",
+            error: videoValidationError || "请先在设置中配置 Videos API",
+          },
+        });
+      }
+
+      const videoConfig = createVideoConfigFromProfile(videoProfile, {
+        seconds: item.seconds ?? "6",
+        size: item.size ?? "1280x720",
+        resolution: item.resolution ?? "720p",
+      });
+      const referenceIds = uniqueIds(extractAgentReferenceIds(item.prompt));
+      const explicitReferences = await resolveReferenceImages(referenceIds);
+      const currentRoundReferenceDataUrls = explicitReferences.dataUrls.length > 0
+        ? explicitReferences.dataUrls
+        : await readAgentContextImageDataUrls(round.inputImageIds ?? []);
+      const currentRoundReferenceImageIds = explicitReferences.imageIds.length > 0
+        ? explicitReferences.imageIds
+        : round.inputImageIds ?? [];
+      const recordId = genId();
+      const baseRecord = {
+        id: recordId,
+        createdAt: Date.now(),
+        prompt: item.prompt,
+        model: videoConfig.model,
+        config: {
+          baseUrl: videoConfig.baseUrl,
+          model: videoConfig.model,
+          size: videoConfig.size,
+          resolution: videoConfig.resolution,
+          seconds: videoConfig.seconds,
+          timeout: videoConfig.timeout,
+          stream: videoConfig.stream,
+        },
+        referenceImageIds: currentRoundReferenceImageIds,
+        referenceImageCount: currentRoundReferenceDataUrls.length,
+        status: "running" as const,
+      };
+      await putVideoRecord(stripTransientVideoUrl(baseRecord));
+      attachVideoRecordToAgentRound(recordId);
+
+      let task: VideoGenerationTask | undefined;
+      try {
+        task = await createVideoGenerationTask(videoConfig, item.prompt, currentRoundReferenceDataUrls, { signal: controller.signal });
+        await putVideoRecord(stripTransientVideoUrl({ ...baseRecord, task }));
+        const finishVideoRecord = async (video: {
+          dataUrl?: string;
+          url?: string;
+          mimeType: string;
+          bytes: number;
+        }) => {
+          const completedRecord = {
+            ...baseRecord,
+            task,
+            status: "success" as const,
+            video: {
+              dataUrl: video.dataUrl,
+              remoteUrl: video.url?.startsWith("http") ? video.url : undefined,
+              mimeType: video.mimeType,
+              bytes: video.bytes,
+            },
+          };
+          await putVideoRecord(stripTransientVideoUrl(completedRecord));
+          completedVideoRecordIds.push(recordId);
+          toolCallsUsed += 1;
+          return JSON.stringify({
+            video: {
+              status: "done",
+              id: recordId,
+              model: videoConfig.model,
+              seconds: videoConfig.seconds,
+              size: videoConfig.size,
+            },
+          });
+        };
+        if (task.completedVideo) {
+          return finishVideoRecord(task.completedVideo);
+        }
+        const deadline = Date.now() + Math.max(1, videoConfig.timeout) * 1000;
+        while (Date.now() < deadline) {
+          const state = await pollVideoGenerationTask(videoConfig, task, { signal: controller.signal });
+          if (state.status === "completed") {
+            return finishVideoRecord(state.video);
+          }
+          if (state.status === "failed") throw new Error(state.error);
+          await sleep(Math.min(state.retryAfterMs ?? POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())), controller.signal);
+        }
+
+        throw new Error("视频生成超时，请稍后重试。");
+      } catch (error) {
+        const safeError = sanitizeProviderErrorMessage(error instanceof Error ? error.message : String(error));
+        await putVideoRecord(stripTransientVideoUrl({
+          ...baseRecord,
+          ...(task ? { task } : {}),
+          status: "failed" as const,
+          error: safeError,
+        }));
+        throw error;
+      }
+    };
+
     while (true) {
       if (controller.signal.aborted) throw createAgentAbortError();
       const textBeforeResponse = accumulatedText;
@@ -1644,6 +1801,10 @@ async function executeAgentRound(
         (item) =>
           item.type === "function_call" && item.name === "continue_generation",
       );
+      const videoFunctionCalls = currentResponseOutputItems.filter(
+        (item) =>
+          item.type === "function_call" && item.name === "generate_video",
+      );
 
       // Count built-in tool calls (image_generation, web_search) for budget tracking
       const responseToolCalls = countResponseToolCalls(
@@ -1668,6 +1829,17 @@ async function executeAgentRound(
       if (batchFunctionCalls.length > 0) {
         for (const fc of batchFunctionCalls) {
           const output = await executeBatchFunctionCall(fc);
+          functionCallOutputs.push({
+            type: "function_call_output",
+            call_id: fc.call_id,
+            output,
+          });
+        }
+      }
+
+      if (videoFunctionCalls.length > 0) {
+        for (const fc of videoFunctionCalls) {
+          const output = await executeVideoFunctionCall(fc);
           functionCallOutputs.push({
             type: "function_call_output",
             call_id: fc.call_id,
@@ -1792,6 +1964,11 @@ async function executeAgentRound(
         deps.getState().tasks.find((task) => task.id === taskId)
           ?.outputImages ?? [],
     );
+    const videoRecordIds =
+      deps.getState()
+        .agentConversations.find((item) => item.id === conversationId)
+        ?.rounds.find((round) => round.id === roundId)
+        ?.outputVideoRecordIds ?? [];
     const limitNotice = [
       reachedToolLimit
         ? `已达到最大工具调用次数（${maxToolCalls}），已停止自动续跑。`
@@ -1807,7 +1984,11 @@ async function executeAgentRound(
       [joinedText, limitNotice]
         .filter(Boolean)
         .join(joinedText ? "\n\n" : "") ||
-      (taskIds.length > 0 || outputIds.length > 0 ? "图像已生成。" : "");
+      (videoRecordIds.length > 0
+        ? "视频已生成，可在视频创作台查看。"
+        : taskIds.length > 0 || outputIds.length > 0
+          ? "图像已生成。"
+          : "");
 
     const assistantMessage: AgentMessage = {
       id: assistantMessageId,
@@ -1815,6 +1996,7 @@ async function executeAgentRound(
       content: finalContent,
       roundId,
       outputTaskIds: taskIds,
+      outputVideoRecordIds: videoRecordIds,
       createdAt: Date.now(),
     };
 
@@ -1827,6 +2009,7 @@ async function executeAgentRound(
               ...round,
               assistantMessageId,
               outputTaskIds: taskIds,
+              outputVideoRecordIds: videoRecordIds,
               responseId: lastResponseId,
               responseOutput: accumulatedOutputItems,
               status: "done",
@@ -1884,12 +2067,18 @@ async function executeAgentRound(
       conversationId,
       roundId,
     );
-    if (successfulOutputs.outputIds.length > 0) {
+    const successfulVideoRecordIds = uniqueIds([
+      ...completedVideoRecordIds,
+      ...getAgentRoundSuccessfulVideoRecordIds(conversationId, roundId)
+        .filter((id) => completedVideoRecordIds.includes(id)),
+    ]);
+    if (successfulOutputs.outputIds.length > 0 || successfulVideoRecordIds.length > 0) {
       markAgentRoundTasksFailed(
         conversationId,
         roundId,
         message,
         deps.getRawErrorPayload(err).rawResponsePayload,
+        (task) => task.status === "running",
       );
       deps.getState().addAgentDiagnosticLog({
         level: "warning",
@@ -1900,6 +2089,7 @@ async function executeAgentRound(
           roundId,
           elapsedMs: Date.now() - startedAt,
           outputImageCount: successfulOutputs.outputIds.length,
+          outputVideoCount: successfulVideoRecordIds.length,
         },
       });
 
@@ -1911,13 +2101,12 @@ async function executeAgentRound(
             )
           : current.messages.find(
               (item) => item.roundId === roundId && item.role === "assistant",
-            );
+        );
         const messageId = existingAssistantMessage?.id ?? genId();
         const currentContent = existingAssistantMessage?.content.trim() ?? "";
-        const fallbackContent = [
-          currentContent || "图片已生成。",
-          `后续文字总结失败：${message}`,
-        ].join("\n\n");
+        const fallbackContent = currentContent || (successfulVideoRecordIds.length > 0
+          ? "视频已生成，可在视频创作台查看。"
+          : "图片已生成。");
 
         return {
           ...current,
@@ -1928,6 +2117,7 @@ async function executeAgentRound(
                   ...round,
                   assistantMessageId: messageId,
                   outputTaskIds: successfulOutputs.taskIds,
+                  outputVideoRecordIds: successfulVideoRecordIds,
                   status: "done",
                   error: null,
                   finishedAt: Date.now(),
@@ -1941,6 +2131,7 @@ async function executeAgentRound(
                       ...item,
                       content: fallbackContent,
                       outputTaskIds: successfulOutputs.taskIds,
+                      outputVideoRecordIds: successfulVideoRecordIds,
                     }
                   : item,
               )
@@ -1952,12 +2143,13 @@ async function executeAgentRound(
                   content: fallbackContent,
                   roundId,
                   outputTaskIds: successfulOutputs.taskIds,
+                  outputVideoRecordIds: successfulVideoRecordIds,
                   createdAt: Date.now(),
                 },
               ],
         };
       });
-      deps.getState().showToast("图片已生成，Agent 后续文字总结失败，可直接使用图片。", "info");
+      deps.getState().showToast(successfulVideoRecordIds.length > 0 ? "视频已生成" : "图片已生成", "success");
       return;
     }
 

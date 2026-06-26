@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import type { AgentMessage, AgentRound, TaskRecord } from '../../types'
+import type { AgentMessage, AgentRound, TaskRecord, VideoGenerationRecord } from '../../types'
+import { getAllVideoRecords } from '../../lib/storage/db'
 import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentSiblingRounds, getCachedImage, ensureImageCached, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, useStore } from '../../store'
 import { getPromptMentionParts } from '../../lib/gallery/promptImageMentions'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../../lib/ui/clipboard'
@@ -18,6 +19,8 @@ import MarkdownRenderer from '../common/MarkdownRenderer'
 import { AgentActionButton } from './AgentActionButton'
 import { AgentStreamingCursor, AgentWebSearchInlineStatus, AgentWebSearchStatusLines } from './AgentStatusBits'
 import { ChatImageThumb } from './ChatImageThumb'
+import { ChatVideoCard } from './ChatVideoCard'
+import { AgentMediaProgress } from './AgentMediaProgress'
 import { TrashIcon, DownloadIcon, EditIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, SidebarLeftIcon, FavoriteIcon, CloseIcon, CopyIcon, RefreshIcon, ArrowDownIcon } from '../common/icons'
 
 const MOBILE_HEADER_PULL_THRESHOLD = 24
@@ -73,6 +76,7 @@ export default function AgentWorkspace() {
   const [conversationSearchQuery, setConversationSearchQuery] = useState('')
   const [conversationActionsId, setConversationActionsId] = useState<string | null>(null)
   const [isScrolledToBottom, setIsScrolledToBottom] = useState(true)
+  const [videoRecords, setVideoRecords] = useState<VideoGenerationRecord[]>([])
   const touchStartY = useRef(-1)
   const conversationLongPressTimer = useRef<number | null>(null)
   const autoScrollStateRef = useRef<{ conversationId: string | null; lastUserMessageSignature: string | null }>({ conversationId: null, lastUserMessageSignature: null })
@@ -261,6 +265,32 @@ export default function AgentWorkspace() {
     }
     return messages
   }, [activeRounds, conversation])
+
+  useEffect(() => {
+    if (appMode !== 'agent') return
+    let cancelled = false
+    let timer: number | null = null
+
+    const loadRecords = () => {
+      void getAllVideoRecords()
+        .then((records) => {
+          if (!cancelled) setVideoRecords(records)
+        })
+        .catch(() => {
+          if (!cancelled) setVideoRecords([])
+        })
+    }
+
+    loadRecords()
+    if (activeMessages.some((message) => message.outputVideoRecordIds?.length)) {
+      timer = window.setInterval(loadRecords, 2500)
+    }
+
+    return () => {
+      cancelled = true
+      if (timer != null) window.clearInterval(timer)
+    }
+  }, [appMode, activeMessages])
 
   useEffect(() => {
     const conversationId = conversation?.id ?? null
@@ -498,6 +528,19 @@ export default function AgentWorkspace() {
         void reuseConfig(task)
       },
     })
+  }
+
+  const handleDownloadVideo = (record: VideoGenerationRecord) => {
+    const url = record.video?.dataUrl || record.video?.remoteUrl
+    if (!url) {
+      showToast('视频文件还没有准备好', 'info')
+      return
+    }
+
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `agent-video-${new Date(record.createdAt).toISOString().slice(0, 10)}.mp4`
+    anchor.click()
   }
 
   const handleEditRoundMessage = async (round: AgentRound, content: string) => {
@@ -754,6 +797,12 @@ export default function AgentWorkspace() {
                 const hasBranches = siblingRounds.length > 1
                 const taskSlotsForRound = isAssistant ? getRoundTaskSlots(round ?? null, tasks) : []
                 const tasksForRound = taskSlotsForRound.map((slot) => slot.task).filter(Boolean) as TaskRecord[]
+                const videoRecordsForMessage = isAssistant
+                  ? (message.outputVideoRecordIds ?? round?.outputVideoRecordIds ?? [])
+                      .map((id) => videoRecords.find((record) => record.id === id))
+                      .filter(Boolean) as VideoGenerationRecord[]
+                  : []
+                const downloadableVideoRecords = videoRecordsForMessage.filter((record) => record.video?.dataUrl || record.video?.remoteUrl)
                 const favoriteTasksForRound = tasksForRound.filter((task) => (task.outputImages?.length ?? 0) > 0)
                 const hasRoundFavoriteTasks = favoriteTasksForRound.length > 0
                 const allRoundTasksFavorited = hasRoundFavoriteTasks && favoriteTasksForRound.every((task) => task.isFavorite)
@@ -829,6 +878,10 @@ export default function AgentWorkspace() {
                       <div data-selectable-text className={`text-[15px] leading-relaxed text-gray-800 dark:text-gray-100 ${!isAssistant ? 'select-text' : ''}`}>
                         {isAssistant ? (
                           <>
+                            <AgentMediaProgress
+                              imageTasks={tasksForRound}
+                              videoRecords={videoRecordsForMessage}
+                            />
                             {assistantBlocks.length > 0 ? assistantBlocks.map((block, index) => {
                               if (block.type === 'web-search') return <AgentWebSearchStatusLines key={block.key} statuses={[block.status]} />
                               if (block.type === 'text') return <div key={block.key} className={index > 0 ? 'mt-3' : undefined}><MarkdownRenderer content={block.content ?? message.content} streaming={isStreamingAssistant} /></div>
@@ -860,6 +913,18 @@ export default function AgentWorkspace() {
                                 </div>
                               )
                             }) : isStreamingAssistant ? <AgentStreamingCursor /> : null}
+                            {videoRecordsForMessage.length > 0 && (
+                              <div className={assistantBlocks.length > 0 ? 'mt-3 space-y-3' : 'space-y-3'}>
+                                {videoRecordsForMessage.map((record, videoIndex) => (
+                                  <ChatVideoCard
+                                    key={record.id}
+                                    record={record}
+                                    index={videoIndex}
+                                    onDownload={handleDownloadVideo}
+                                  />
+                                ))}
+                              </div>
+                            )}
                           </>
                         ) : parts.some((part) => part.type === 'mention') ? (
                           <div className="whitespace-pre-wrap break-words">
@@ -926,10 +991,15 @@ export default function AgentWorkspace() {
                             }}>
                               <FavoriteIcon className="w-4 h-4" filled={allRoundTasksFavorited} />
                             </AgentActionButton>
-                            <AgentActionButton tooltip="下载所有图片" className={`p-1.5 rounded-md transition-colors ${getRoundTasks(round ?? null, tasks).filter(Boolean).length > 0 ? 'text-gray-400 hover:text-green-500 hover:bg-green-50 dark:hover:bg-green-500/10' : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={getRoundTasks(round ?? null, tasks).filter(Boolean).length === 0} onClick={async () => {
+                            <AgentActionButton tooltip="下载所有媒体" className={`p-1.5 rounded-md transition-colors ${getRoundTasks(round ?? null, tasks).filter(Boolean).length > 0 || downloadableVideoRecords.length > 0 ? 'text-gray-400 hover:text-green-500 hover:bg-green-50 dark:hover:bg-green-500/10' : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={getRoundTasks(round ?? null, tasks).filter(Boolean).length === 0 && downloadableVideoRecords.length === 0} onClick={async () => {
                                const imageIds = tasksForRound.flatMap(t => t.outputImages || []);
-                               if (imageIds.length === 0) return;
+                               if (imageIds.length === 0 && downloadableVideoRecords.length === 0) return;
                                try {
+                                  for (const record of downloadableVideoRecords) handleDownloadVideo(record);
+                                  if (imageIds.length === 0) {
+                                    useStore.getState().showToast('视频下载已开始', 'success');
+                                    return;
+                                  }
                                   const roundIndex = round?.index ?? 0;
                                   const fileNameBase = 'agent-round-' + roundIndex;
                                   const settings = useStore.getState().settings;

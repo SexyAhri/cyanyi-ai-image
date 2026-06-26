@@ -2,13 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { strToU8, zipSync } from 'fflate'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultGrokProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, normalizeSettings } from '../lib/api/apiProfiles'
-import type { AgentConversation, ExportData, StoredImage, StoredImageThumbnail, TaskRecord } from '../types'
+import type { AgentConversation, ExportData, StoredImage, StoredImageThumbnail, TaskRecord, VideoGenerationRecord } from '../types'
 import { getSelectedImageMentionLabel } from '../lib/gallery/promptImageMentions'
 vi.mock('../lib/storage/db', () => {
   const tasks = new Map<string, TaskRecord>()
   const images = new Map<string, StoredImage>()
   const thumbnails = new Map<string, StoredImageThumbnail>()
   const agentConversations = new Map<string, AgentConversation>()
+  const videoRecords = new Map<string, VideoGenerationRecord>()
   let imageSeq = 0
 
   return {
@@ -35,7 +36,21 @@ vi.mock('../lib/storage/db', () => {
     clearAgentConversations: async () => {
       agentConversations.clear()
     },
-    clearVideoRecords: async () => {},
+    getAllVideoRecords: async () => [...videoRecords.values()],
+    putVideoRecord: async (record: VideoGenerationRecord) => {
+      videoRecords.set(record.id, record)
+      return record.id
+    },
+    deleteVideoRecord: async (id: string) => {
+      videoRecords.delete(id)
+    },
+    clearVideoRecords: async () => {
+      videoRecords.clear()
+    },
+    replaceVideoRecords: async (records: VideoGenerationRecord[]) => {
+      videoRecords.clear()
+      for (const record of records) videoRecords.set(record.id, record)
+    },
     replaceAgentConversations: async (conversations: AgentConversation[]) => {
       agentConversations.clear()
       for (const conversation of conversations) agentConversations.set(conversation.id, conversation)
@@ -119,9 +134,45 @@ vi.mock('../lib/agent/agentApi', () => ({
       return null
     }
   }),
+  parseVideoCallArguments: vi.fn((args: string) => {
+    try {
+      const parsed = JSON.parse(args) as { prompt?: string; seconds?: string; size?: string; resolution?: string }
+      const prompt = typeof parsed.prompt === 'string' ? parsed.prompt.trim() : ''
+      return prompt
+        ? {
+            prompt,
+            ...(typeof parsed.seconds === 'string' ? { seconds: parsed.seconds } : {}),
+            ...(typeof parsed.size === 'string' ? { size: parsed.size } : {}),
+            ...(typeof parsed.resolution === 'string' ? { resolution: parsed.resolution } : {}),
+          }
+        : null
+    } catch {
+      return null
+    }
+  }),
 }))
-import { clearAgentConversations, clearImages, clearTasks, getAllAgentConversations, getAllTasks, getImage, putAgentConversation, putImage, putTask as putDbTask } from '../lib/storage/db'
+vi.mock('../lib/video/videoApi', async () => {
+  const actual = await vi.importActual<typeof import('../lib/video/videoApi')>('../lib/video/videoApi')
+  return {
+    ...actual,
+    createVideoGenerationTask: vi.fn(async () => ({
+      id: 'video-task-a',
+      model: 'grok-imagine-video',
+    })),
+    pollVideoGenerationTask: vi.fn(async () => ({
+      status: 'completed',
+      video: {
+        url: 'https://example.com/video.mp4',
+        dataUrl: 'data:video/mp4;base64,dmRlbw==',
+        mimeType: 'video/mp4',
+        bytes: 4,
+      },
+    })),
+  }
+})
+import { clearAgentConversations, clearImages, clearTasks, clearVideoRecords, getAllAgentConversations, getAllTasks, getAllVideoRecords, getImage, putAgentConversation, putImage, putTask as putDbTask } from '../lib/storage/db'
 import { callAgentResponsesApi, callBatchImageSingle } from '../lib/agent/agentApi'
+import { createVideoGenerationTask, pollVideoGenerationTask } from '../lib/video/videoApi'
 import { removeKeyedBackgroundFromDataUrl } from '../lib/gallery/transparentImage'
 import { cleanStaleAgentInputDrafts, clearData, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, retryTask, reuseConfig, sanitizeProviderErrorMessage, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from '../store'
 
@@ -1956,12 +2007,22 @@ describe('agent built-in image tool failure', () => {
     model: DEFAULT_RESPONSES_MODEL,
     streamImages: true,
   })
+  const videoProfile = createDefaultOpenAIProfile({
+    id: 'video-profile',
+    apiKey: 'video-key',
+    apiMode: 'videos',
+    model: 'grok-imagine-video',
+    streamImages: true,
+  })
 
   beforeEach(async () => {
     await clearTasks()
     await clearImages()
     await clearAgentConversations()
     vi.mocked(callAgentResponsesApi).mockClear()
+    vi.mocked(createVideoGenerationTask).mockClear()
+    vi.mocked(pollVideoGenerationTask).mockClear()
+    await clearVideoRecords()
     useStore.setState({
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
@@ -1969,8 +2030,9 @@ describe('agent built-in image tool failure', () => {
         apiMode: 'responses',
         model: DEFAULT_RESPONSES_MODEL,
         streamImages: true,
-        profiles: [responsesProfile],
+        profiles: [responsesProfile, videoProfile],
         activeProfileId: responsesProfile.id,
+        videoProfileId: videoProfile.id,
       }),
       prompt: '画一张图',
       inputImages: [],
@@ -2173,6 +2235,173 @@ describe('agent built-in image tool failure', () => {
     })
     expect(state.agentConversations[0].messages.find((message) => message.role === 'assistant')?.content)
       .toContain('API')
+  })
+
+  it('keeps generated images successful when the follow-up Agent response is unauthorized', async () => {
+    vi.mocked(callAgentResponsesApi)
+      .mockResolvedValueOnce({
+        text: '',
+        images: [],
+        outputItems: [{
+          type: 'function_call',
+          name: 'generate_image',
+          call_id: 'image-call',
+          arguments: JSON.stringify({ prompt: 'draw product' }),
+        }],
+        responseId: 'response-before-image',
+      })
+      .mockRejectedValueOnce(new Error('401 Unauthorized'))
+    vi.mocked(callBatchImageSingle).mockClear()
+    vi.mocked(callBatchImageSingle).mockImplementationOnce(async (opts) => {
+      await opts.onImageToolCompleted?.({
+        dataUrl: 'data:image/png;base64,generated',
+        revisedPrompt: 'draw product',
+      })
+      return {
+      batchItemId: 'image',
+      image: { dataUrl: 'data:image/png;base64,generated', revisedPrompt: 'draw product' },
+      error: null,
+      }
+    })
+
+    await submitAgentMessage()
+    for (let i = 0; i < 20 && useStore.getState().agentConversations[0].rounds[0]?.status !== 'done'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    const state = useStore.getState()
+    const round = state.agentConversations[0].rounds[0]
+    const task = state.tasks[0]
+    const assistantMessage = state.agentConversations[0].messages.find((message) => message.role === 'assistant')
+
+    expect(callBatchImageSingle).toHaveBeenCalledTimes(1)
+    expect(task).toMatchObject({
+      status: 'done',
+      sourceMode: 'agent',
+      outputImages: expect.any(Array),
+    })
+    expect(round).toMatchObject({
+      status: 'done',
+      error: null,
+      outputTaskIds: [task.id],
+    })
+    expect(assistantMessage?.content).toBe('图片已生成。')
+    expect(assistantMessage?.content).not.toContain('Unauthorized')
+    expect(assistantMessage?.outputTaskIds).toEqual([task.id])
+  })
+
+  it('lets Agent generate video with the video API profile and keeps the result when follow-up text fails', async () => {
+    vi.mocked(callAgentResponsesApi)
+      .mockResolvedValueOnce({
+        text: '',
+        images: [],
+        outputItems: [{
+          type: 'function_call',
+          name: 'generate_video',
+          call_id: 'video-call',
+          arguments: JSON.stringify({
+            prompt: 'make a product video',
+            seconds: '8',
+            size: '720x1280',
+            resolution: '720p',
+          }),
+        }],
+        responseId: 'response-before-video',
+      })
+      .mockRejectedValueOnce(new Error('401 Unauthorized'))
+
+    await submitAgentMessage()
+    for (let i = 0; i < 20 && useStore.getState().agentConversations[0].rounds[0]?.status !== 'done'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    const state = useStore.getState()
+    const round = state.agentConversations[0].rounds[0]
+    const assistantMessage = state.agentConversations[0].messages.find((message) => message.role === 'assistant')
+    const videoRecords = await getAllVideoRecords()
+    const completedVideo = videoRecords.find((record) => record.status === 'success')
+
+    expect(createVideoGenerationTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'video-key',
+        model: 'grok-imagine-video',
+        seconds: '8',
+        size: '720x1280',
+        resolution: '720p',
+      }),
+      'make a product video',
+      [],
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    expect(pollVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(completedVideo).toMatchObject({
+      prompt: 'make a product video',
+      model: 'grok-imagine-video',
+      status: 'success',
+      video: {
+        dataUrl: 'data:video/mp4;base64,dmRlbw==',
+        remoteUrl: 'https://example.com/video.mp4',
+        mimeType: 'video/mp4',
+        bytes: 4,
+      },
+    })
+    expect(round).toMatchObject({
+      status: 'done',
+      error: null,
+      outputVideoRecordIds: [completedVideo?.id],
+    })
+    expect(assistantMessage).toMatchObject({
+      content: '视频已生成，可在视频创作台查看。',
+      outputVideoRecordIds: [completedVideo?.id],
+    })
+    expect(assistantMessage?.content).not.toContain('Unauthorized')
+    expect(useStore.getState().showToast).toHaveBeenCalledWith('视频已生成', 'success')
+  })
+
+  it('passes current Agent input images as video references', async () => {
+    await putImage(imageA)
+    useStore.setState({
+      inputImages: [{ id: imageA.id, dataUrl: imageA.dataUrl }],
+      prompt: '让这个商品动起来',
+    })
+    vi.mocked(callAgentResponsesApi)
+      .mockResolvedValueOnce({
+        text: '',
+        images: [],
+        outputItems: [{
+          type: 'function_call',
+          name: 'generate_video',
+          call_id: 'video-call-with-ref',
+          arguments: JSON.stringify({
+            prompt: 'make this product rotate slowly',
+            seconds: '6',
+          }),
+        }],
+        responseId: 'response-before-video-ref',
+      })
+      .mockResolvedValueOnce({
+        text: 'ok',
+        images: [],
+        outputItems: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
+        responseId: 'response-after-video-ref',
+      })
+
+    await submitAgentMessage()
+    for (let i = 0; i < 20 && useStore.getState().agentConversations[0].rounds[0]?.status !== 'done'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect(createVideoGenerationTask).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: 'video-key' }),
+      'make this product rotate slowly',
+      [imageA.dataUrl],
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    const completedVideo = (await getAllVideoRecords()).find((record) => record.status === 'success')
+    expect(completedVideo).toMatchObject({
+      referenceImageIds: [imageA.id],
+      referenceImageCount: 1,
+    })
   })
 })
 

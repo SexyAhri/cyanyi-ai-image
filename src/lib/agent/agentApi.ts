@@ -238,6 +238,40 @@ function createAgentTools(params: TaskParams, profile: ApiProfile, settings: App
     strict: true,
   })
 
+  tools.push({
+    type: 'function',
+    name: 'generate_video',
+    description: [
+      'Generate one video through the app-configured video channel.',
+      'Use this when the user explicitly asks for a video, animation, short clip, camera movement, or product video.',
+      'The prompt must describe the scene, motion, camera, subject, style, and duration requirements.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description: 'Complete video generation prompt with scene, motion, camera, subject, and style details.',
+        },
+        seconds: {
+          type: 'string',
+          description: 'Optional duration in seconds, e.g. "6", "8", "10", "12".',
+        },
+        size: {
+          type: 'string',
+          description: 'Optional video size, e.g. "1280x720" or "720x1280".',
+        },
+        resolution: {
+          type: 'string',
+          description: 'Optional resolution label, e.g. "720p" or "1080p".',
+        },
+      },
+      required: ['prompt'],
+      additionalProperties: false,
+    },
+    strict: true,
+  })
+
   if (settings.agentWebSearch) {
     tools.push({ type: 'web_search' })
   }
@@ -1133,6 +1167,22 @@ export function parseSingleImageCallArguments(args: string): { prompt: string } 
     const parsed = JSON.parse(args) as { prompt?: unknown }
     const prompt = typeof parsed?.prompt === 'string' ? parsed.prompt.trim() : ''
     return prompt ? { prompt } : null
+  } catch {
+    return null
+  }
+}
+
+export function parseVideoCallArguments(args: string): { prompt: string; seconds?: string; size?: string; resolution?: string } | null {
+  try {
+    const parsed = JSON.parse(args) as { prompt?: unknown; seconds?: unknown; size?: unknown; resolution?: unknown }
+    const prompt = typeof parsed?.prompt === 'string' ? parsed.prompt.trim() : ''
+    if (!prompt) return null
+    return {
+      prompt,
+      ...(typeof parsed.seconds === 'string' && parsed.seconds.trim() ? { seconds: parsed.seconds.trim() } : {}),
+      ...(typeof parsed.size === 'string' && parsed.size.trim() ? { size: parsed.size.trim() } : {}),
+      ...(typeof parsed.resolution === 'string' && parsed.resolution.trim() ? { resolution: parsed.resolution.trim() } : {}),
+    }
   } catch {
     return null
   }

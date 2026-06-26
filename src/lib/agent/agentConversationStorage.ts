@@ -47,6 +47,9 @@ function normalizeAgentRound(
     maskImageId:
       typeof round.maskImageId === 'string' ? round.maskImageId : null,
     outputTaskIds: normalizeStringArray(round.outputTaskIds),
+    ...(Array.isArray(round.outputVideoRecordIds)
+      ? { outputVideoRecordIds: normalizeStringArray(round.outputVideoRecordIds) }
+      : {}),
     ...(typeof round.responseId === 'string'
       ? { responseId: round.responseId }
       : {}),
@@ -89,6 +92,9 @@ function normalizeAgentMessage(value: unknown): AgentMessage | null {
       typeof message.maskImageId === 'string' ? message.maskImageId : null,
     ...(Array.isArray(message.outputTaskIds)
       ? { outputTaskIds: normalizeStringArray(message.outputTaskIds) }
+      : {}),
+    ...(Array.isArray(message.outputVideoRecordIds)
+      ? { outputVideoRecordIds: normalizeStringArray(message.outputVideoRecordIds) }
       : {}),
     createdAt:
       typeof message.createdAt === 'number' ? message.createdAt : Date.now(),
