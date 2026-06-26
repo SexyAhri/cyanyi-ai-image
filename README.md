@@ -1,95 +1,206 @@
 # CyanYi AI Image
 
-静态版 AI 图像生成前端，适合接入 NewAPI 并部署到 Cloudflare Pages。
+CyanYi AI Image 是一个面向生图、Agent 创作和视频生成的 AI 创作前端，适合接入 NewAPI / 中转站 / OpenAI 兼容接口后部署使用。
 
 体验地址：[https://image.cyanyi.com/](https://image.cyanyi.com/)
 
 ## 开源来源
 
-本站点基于开源项目 [GPT Image Playground](https://github.com/CookSleep/gpt_image_playground)（[MIT License](https://github.com/CookSleep/gpt_image_playground/blob/main/LICENSE)）修改。
+本站点基于开源项目 [GPT Image Playground](https://github.com/CookSleep/gpt_image_playground) ([MIT](https://github.com/CookSleep/gpt_image_playground/blob/main/LICENSE)) 修改。
 
 ## CyanYI 中转
 
-项目菜单现已内置 `CyanYI 中转` 入口，也可以直接访问：[https://ai.cyanyi.com/](https://ai.cyanyi.com/)
+项目菜单已内置 `CyanYI 中转` 入口，也可以直接访问：[https://ai.cyanyi.com/](https://ai.cyanyi.com/)
 
-默认推荐使用 CyanYI 中转，开箱即用会更省心一些；如果你使用的是其他支持 `gpt-image-2`、Responses API 或 `image_generation` 能力的中转站 / 兼容接口，也可以直接接入使用。
+如果你还没有可用的模型接口，推荐优先使用 CyanYI 中转，开箱配置会更省心；如果你已经有自己的 NewAPI、中转站或 OpenAI 兼容接口，也可以在设置页里直接接入。
 
-## 功能
+## 主要功能
 
-- 画廊生图
-- Agent 对话式生图
-- 收藏管理
-- Responses 模式接入
-- 支持接入兼容 `gpt-image-2` 的中转站和接口
-- 适配 Cloudflare Pages 静态部署
+- 画廊生图：支持文生图、图生图、参考图、多图输入、生成历史、图片预览和下载。
+- Agent 对话：支持对话式生成图片和视频，生成结果可在消息中直接预览、下载和重试。
+- 视频创作台：支持视频模型配置、参考图输入、生成记录和视频下载。
+- 多接口配置：支持 OpenAI Images、OpenAI Responses、Gemini / 自定义兼容接口、NewAPI 中转站等调用方式。
+- 流式与非流式兼容：可测试接口是否支持流式返回，并根据结果调整默认模式。
+- 电商创作工具：支持系列基准图、固定人物 / 产品 / 画风、套图任务包、SKU 命名、平台合规预设、文案和卖点生成。
+- 创作资产管理：可保存系列基准图历史，并在后续创作中快速复用参考图。
+- 部署友好：内置 Dockerfile、GitHub Actions、服务器 Docker Compose 部署文件。
 
-## 本地运行
+## 本地开发
+
+安装依赖：
 
 ```bash
 npm install
+```
+
+启动开发服务：
+
+```bash
 npm run dev
 ```
 
-## 构建
+常用检查：
 
 ```bash
+npm run typecheck
+npm test
 npm run build
 ```
 
-产物输出到 `dist/`。
+构建产物输出到 `dist/`。
+
+## 页面配置说明
+
+进入站点后，打开设置页面，根据你自己的中转站或模型服务填写配置。
+
+常用配置项：
+
+- `Base URL`：接口地址，例如 `https://你的中转站域名/v1`。
+- `API Key`：中转站或模型服务提供的密钥。
+- `模型名称`：例如你的中转站里配置的生图、对话或视频模型名称。
+- `调用格式`：根据接口选择 OpenAI Images、OpenAI Responses、Gemini / 自定义等格式。
+- `NewAPI 分组 / group`：只有你的中转站模型确实需要分组时再填写。
+- `流式传输`：建议先用测试连接功能检测，支持流式就开启，不支持就关闭。
+
+如果生图、对话、视频使用的不是同一套 Key，需要分别在对应配置里填写，不要混用。
 
 ## Docker 镜像
-
-项目已内置多阶段 `Dockerfile`，会先用 Node 20 构建，再用 Nginx 提供静态文件服务。
 
 本地构建镜像：
 
 ```bash
-docker build -t cyanyi-ai-image:local .
+docker build -t cyanyi-ai-image:local -f Dockerfile.runtime .
 ```
 
-本地运行镜像：
+本地运行：
 
 ```bash
 docker run -d --name cyanyi-ai-image -p 9525:80 cyanyi-ai-image:local
 ```
 
-打开 `http://127.0.0.1:9525` 即可访问。
+访问：
+
+```txt
+http://127.0.0.1:9525
+```
 
 ## GitHub 自动构建镜像
 
 仓库已包含 GitHub Actions 工作流：
 
-- [`.github/workflows/docker-image.yml`](/C:/Users/Administrator/Desktop/HomeCode/cyanyi-ai-image/.github/workflows/docker-image.yml)
+- `.github/workflows/docker-image.yml`
 
-它会在以下场景自动构建并推送镜像到 GitHub Container Registry `ghcr.io`：
+推送到 `main` 分支后会自动：
 
-- 推送到 `main`
-- 推送 `v*` 标签
-- 手动触发 `workflow_dispatch`
+1. 安装依赖
+2. 运行测试
+3. 构建前端
+4. 使用 `Dockerfile.runtime` 构建运行镜像
+5. 推送到 GitHub Container Registry
 
-默认镜像名格式：
-
-```txt
-ghcr.io/<你的 GitHub 用户名或组织名>/<仓库名>
-```
-
-例如：
+当前仓库对应镜像地址：
 
 ```txt
-ghcr.io/cyanyi/cyanyi-ai-image:latest
+ghcr.io/sexyahri/cyanyi-ai-image:latest
 ```
 
-### 启用 GHCR
+如果仓库是私有的，服务器拉取镜像前需要登录 GHCR：
 
-1. 把仓库推到 GitHub。
-2. 确认仓库的 Actions 已启用。
-3. 第一次推送到 `main` 后，到 GitHub 仓库的 `Packages` 查看镜像是否已生成。
-4. 如果服务器拉取私有镜像，需要准备一个拥有 `read:packages` 权限的 GitHub Token。
+```bash
+echo <YOUR_GITHUB_TOKEN> | docker login ghcr.io -u <YOUR_GITHUB_USERNAME> --password-stdin
+```
 
-### 可选的构建变量
+Token 至少需要 `read:packages` 权限。
 
-这个前端在构建镜像时支持以下 GitHub Repository Variables：
+## 服务器 Docker Compose 部署
+
+服务器上可以直接使用 `deploy/` 目录里的文件。
+
+目录结构：
+
+```txt
+deploy/
+  docker-compose.yml
+  .env.example
+  update.sh
+```
+
+复制环境文件：
+
+```bash
+cp .env.example .env
+```
+
+推荐 `.env` 内容：
+
+```env
+IMAGE_NAME=ghcr.io/sexyahri/cyanyi-ai-image
+IMAGE_TAG=latest
+CONTAINER_NAME=cyanyi-ai-image
+HOST_PORT=9525
+```
+
+启动：
+
+```bash
+docker compose up -d
+```
+
+更新：
+
+```bash
+sh update.sh
+```
+
+容器内部使用 Nginx 监听 `80` 端口，服务器通过 `HOST_PORT=9525` 映射到宿主机 `9525` 端口。
+
+## Nginx 反代建议
+
+如果通过 Nginx 反代到本项目，建议把超时时间调大，避免长时间生图或视频生成被过早断开。
+
+示例：
+
+```nginx
+server {
+    server_name image.example.com;
+
+    client_max_body_size 100m;
+
+    location / {
+        proxy_pass http://127.0.0.1:9525;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 900s;
+        proxy_read_timeout 900s;
+        send_timeout 900s;
+
+        proxy_buffering off;
+        proxy_cache off;
+    }
+}
+```
+
+## Cloudflare Pages 部署
+
+如果选择静态部署到 Cloudflare Pages，可以使用：
+
+```txt
+Build command: npm run build
+Build output directory: dist
+Node.js version: 22
+```
+
+如果生图或视频请求耗时较长，更推荐服务器 Docker + Nginx 反代，避免平台或隧道超时限制影响生成结果。
+
+## 构建变量
+
+GitHub Actions 构建时支持以下 Repository Variables：
 
 - `VITE_DEFAULT_API_URL`
 - `VITE_API_PROXY_AVAILABLE`
@@ -98,115 +209,26 @@ ghcr.io/cyanyi/cyanyi-ai-image:latest
 
 设置位置：
 
-- GitHub 仓库 `Settings -> Secrets and variables -> Actions -> Variables`
-
-如果不设置，就使用工作流里的默认值。
-
-## Cloudflare Pages
-
-Cloudflare Pages 构建配置：
-
 ```txt
-Build command: npm run build
-Build output directory: dist
-Node.js version: 20
+GitHub 仓库 -> Settings -> Secrets and variables -> Actions -> Variables
 ```
 
-`public/_redirects` 和 `public/_headers` 已经准备好，可以直接部署。
+不设置也可以，项目会使用默认行为。
 
-## 自动部署
+## 上传前注意
 
-如果你使用 Cloudflare Pages 自带的 GitHub 集成，只需要在 Cloudflare Pages 里连接 GitHub 仓库，并将生产分支设置为 `main`。
+不要上传本地密钥文件。
 
-之后每次推送到 `main` 分支，Cloudflare Pages 会自动构建并部署。
+项目已忽略：
 
-## 服务器直接拉镜像部署
+- `.env`
+- `.env.*`
+- `deploy/.env`
+- `node_modules/`
+- `dist/`
 
-如果你不走 Cloudflare Pages，而是想让服务器直接拉 GHCR 镜像部署，可以直接用仓库里的部署文件：
+服务器实际使用的 `deploy/.env` 只保留在服务器或本地，不要提交到 GitHub。
 
-- [`deploy/docker-compose.yml`](/C:/Users/Administrator/Desktop/HomeCode/cyanyi-ai-image/deploy/docker-compose.yml)
-- [`deploy/.env.example`](/C:/Users/Administrator/Desktop/HomeCode/cyanyi-ai-image/deploy/.env.example)
-- [`deploy/update.sh`](/C:/Users/Administrator/Desktop/HomeCode/cyanyi-ai-image/deploy/update.sh)
+## License
 
-### 1. 服务器准备
-
-服务器安装：
-
-- Docker
-- Docker Compose Plugin
-
-如果镜像是私有的，先登录 GHCR：
-
-```bash
-echo <YOUR_GITHUB_TOKEN> | docker login ghcr.io -u <YOUR_GITHUB_USERNAME> --password-stdin
-```
-
-Token 需要至少有：
-
-- `read:packages`
-
-### 2. 复制部署文件
-
-把 `deploy` 目录放到服务器，例如：
-
-```bash
-/opt/cyanyi-ai-image/
-```
-
-然后复制环境文件：
-
-```bash
-cp .env.example .env
-```
-
-修改 `.env`：
-
-```env
-IMAGE_NAME=ghcr.io/your-github-name/cyanyi-ai-image
-IMAGE_TAG=latest
-CONTAINER_NAME=cyanyi-ai-image
-HOST_PORT=9525
-```
-
-### 3. 启动容器
-
-```bash
-docker compose up -d
-```
-
-之后更新镜像时手动执行：
-
-```bash
-sh update.sh
-```
-
-这会执行：
-
-- `docker compose pull`
-- `docker compose up -d`
-- 清理未使用旧镜像
-
-### 4. 验证服务
-
-```bash
-curl http://127.0.0.1:9525
-```
-
-如果能返回首页 HTML，说明容器服务正常。
-
-## 推荐部署链路
-
-如果你的目标是“上传 GitHub 后自动构建镜像，然后服务器手动拉镜像部署”，推荐这样做：
-
-1. 本地推送代码到 GitHub `main`
-2. GitHub Actions 自动构建并推送镜像到 `ghcr.io`
-3. 服务器手动执行 `sh update.sh` 拉取最新 `latest` 镜像并重启容器
-4. 你的隧道映射到服务器 `9525` 端口
-
-## 配置
-
-通过页面设置填写 API Base URL、API Key、模型等信息。
-
-## 版本
-
-当前版本从 `package.json` 读取。
+本项目修改自 [GPT Image Playground](https://github.com/CookSleep/gpt_image_playground)，原项目使用 [MIT License](https://github.com/CookSleep/gpt_image_playground/blob/main/LICENSE)。
