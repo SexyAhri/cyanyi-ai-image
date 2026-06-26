@@ -2520,6 +2520,86 @@ describe('agent built-in image tool failure', () => {
     })
   })
 
+  it('passes referenced history images as video references even when the tool prompt omits refs', async () => {
+    await putImage(imageA)
+    useStore.setState({
+      prompt: '@第1轮图1 生成一个产品展示视频',
+      inputImages: [],
+      tasks: [
+        task({
+          id: 'history-image-task',
+          outputImages: [imageA.id],
+          sourceMode: 'agent',
+          agentConversationId: 'agent-video-conversation',
+          agentRoundId: 'history-round',
+        }),
+      ],
+      agentConversations: [agentConversation({
+        id: 'agent-video-conversation',
+        activeRoundId: 'history-round',
+        rounds: [{
+          id: 'history-round',
+          index: 1,
+          parentRoundId: null,
+          userMessageId: 'history-user',
+          assistantMessageId: 'history-assistant',
+          prompt: '生成产品图',
+          inputImageIds: [],
+          outputTaskIds: ['history-image-task'],
+          status: 'done',
+          error: null,
+          createdAt: 1,
+          finishedAt: 2,
+        }],
+        messages: [
+          { id: 'history-user', role: 'user', content: '生成产品图', roundId: 'history-round', createdAt: 1 },
+          { id: 'history-assistant', role: 'assistant', content: '完成', roundId: 'history-round', outputTaskIds: ['history-image-task'], createdAt: 2 },
+        ],
+      })],
+      activeAgentConversationId: 'agent-video-conversation',
+    })
+    vi.mocked(callAgentResponsesApi)
+      .mockResolvedValueOnce({
+        text: '',
+        images: [],
+        outputItems: [{
+          type: 'function_call',
+          name: 'generate_video',
+          call_id: 'video-call-history-ref',
+          arguments: JSON.stringify({
+            prompt: 'make a product display video',
+            seconds: '6',
+          }),
+        }],
+        responseId: 'response-before-video-history-ref',
+      })
+      .mockResolvedValueOnce({
+        text: 'ok',
+        images: [],
+        outputItems: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
+        responseId: 'response-after-video-history-ref',
+      })
+
+    await submitAgentMessage()
+    for (let i = 0; i < 20; i++) {
+      const rounds = useStore.getState().agentConversations[0].rounds
+      if (rounds[rounds.length - 1]?.status === 'done') break
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect(createVideoGenerationTask).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: 'video-key' }),
+      'make a product display video',
+      [imageA.dataUrl],
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    const completedVideo = (await getAllVideoRecords()).find((record) => record.status === 'success')
+    expect(completedVideo).toMatchObject({
+      referenceImageIds: [imageA.id],
+      referenceImageCount: 1,
+    })
+  })
+
 
 })
 

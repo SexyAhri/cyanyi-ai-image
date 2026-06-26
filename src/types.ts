@@ -320,6 +320,7 @@ export interface VideoGenerationRecord {
   }
   referenceImageIds?: string[]
   referenceImageCount?: number
+  referenceImageDataUrls?: string[]
   status: 'queued' | 'running' | 'success' | 'failed' | 'cancelled'
   progress?: number
   task?: {

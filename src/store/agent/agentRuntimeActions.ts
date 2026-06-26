@@ -1157,6 +1157,40 @@ async function executeAgentRound(
       return { dataUrls, imageIds };
     };
 
+    const resolveToolReferenceImages = async (
+      referenceIds: string[],
+      fallbackImageIds: string[] = [],
+    ): Promise<{ dataUrls: string[]; imageIds: string[] }> => {
+      const references = await resolveReferenceImages(referenceIds);
+      if (references.imageIds.length > 0 || fallbackImageIds.length === 0) {
+        return references;
+      }
+
+      const fallbackIds = uniqueIds(fallbackImageIds);
+      if (fallbackIds.length === 0) return references;
+      const fallbackDataUrls = await readAgentContextImageDataUrls(fallbackIds);
+      return {
+        dataUrls: fallbackDataUrls,
+        imageIds: fallbackIds,
+      };
+    };
+
+    const getToolPromptReferenceIds = (toolPrompt: string) =>
+      uniqueIds([
+        ...extractAgentReferenceIds(toolPrompt),
+        ...extractAgentReferenceIds(round.prompt),
+        ...extractAgentPromptReferenceIds(
+          toolPrompt,
+          getAgentRoundPath(conversation, roundId),
+          deps.getState().tasks,
+        ),
+        ...extractAgentPromptReferenceIds(
+          round.prompt,
+          getAgentRoundPath(conversation, roundId),
+          deps.getState().tasks,
+        ),
+      ]);
+
     const executeSingleImageFunctionCall = async (
       functionCallItem: ResponsesOutputItem,
     ): Promise<string> => {
@@ -1167,15 +1201,11 @@ async function executeAgentRound(
         return JSON.stringify({ error: "Invalid or empty image arguments" });
       }
 
-      const referenceIds = uniqueIds([
-        ...extractAgentReferenceIds(item.prompt),
-        ...extractAgentPromptReferenceIds(
-          item.prompt,
-          getAgentRoundPath(conversation, roundId),
-          deps.getState().tasks,
-        ),
-      ]);
-      const references = await resolveReferenceImages(referenceIds);
+      const referenceIds = getToolPromptReferenceIds(item.prompt);
+      const references = await resolveToolReferenceImages(
+        referenceIds,
+        round.inputImageIds ?? [],
+      );
       const toolCallId = functionCallItem.call_id || genId();
       await ensureStreamingAgentTask(
         toolCallId,
@@ -1277,8 +1307,11 @@ async function executeAgentRound(
       // Create task cards in model-provided order before starting network calls.
       const batchExecutionItems = [];
       for (const item of batchItems) {
-        const referenceIds = uniqueIds(extractAgentReferenceIds(item.prompt));
-        const references = await resolveReferenceImages(referenceIds);
+        const referenceIds = getToolPromptReferenceIds(item.prompt);
+        const references = await resolveToolReferenceImages(
+          referenceIds,
+          round.inputImageIds ?? [],
+        );
         const batchToolCallId = genId();
         await ensureStreamingAgentTask(
           batchToolCallId,
@@ -1455,21 +1488,13 @@ async function executeAgentRound(
         size: item.size ?? "1280x720",
         resolution: item.resolution ?? "720p",
       });
-      const referenceIds = uniqueIds([
-        ...extractAgentReferenceIds(item.prompt),
-        ...extractAgentPromptReferenceIds(
-          item.prompt,
-          getAgentRoundPath(conversation, roundId),
-          deps.getState().tasks,
-        ),
-      ]);
-      const explicitReferences = await resolveReferenceImages(referenceIds);
-      const currentRoundReferenceDataUrls = explicitReferences.dataUrls.length > 0
-        ? explicitReferences.dataUrls
-        : await readAgentContextImageDataUrls(round.inputImageIds ?? []);
-      const currentRoundReferenceImageIds = explicitReferences.imageIds.length > 0
-        ? explicitReferences.imageIds
-        : round.inputImageIds ?? [];
+      const referenceIds = getToolPromptReferenceIds(item.prompt);
+      const explicitReferences = await resolveToolReferenceImages(
+        referenceIds,
+        round.inputImageIds ?? [],
+      );
+      const currentRoundReferenceDataUrls = explicitReferences.dataUrls;
+      const currentRoundReferenceImageIds = explicitReferences.imageIds;
       const recordId = genId();
       const baseRecord = {
         id: recordId,

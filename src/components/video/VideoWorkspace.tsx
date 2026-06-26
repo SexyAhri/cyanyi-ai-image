@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { getAllVideoRecords, putVideoRecord, deleteVideoRecord, clearVideoRecords } from '../../lib/storage/db'
+import { getAllVideoRecords, putVideoRecord, deleteVideoRecord, clearVideoRecords, storeImage } from '../../lib/storage/db'
 import { getVideoApiProfile } from '../../lib/api/apiProfiles'
 import {
   createVideoConfigFromProfile,
@@ -26,6 +26,7 @@ import {
   type MediaAsset,
 } from '../../lib/video/videoWorkspaceUtils'
 import { useStore } from '../../store'
+import { ensureImageCached } from '../../lib/storage/imageCache'
 import type { VideoGenerationRecord } from '../../types'
 import { VideoComposePanel } from './VideoComposePanel'
 import { VideoHistoryPanel } from './VideoHistoryPanel'
@@ -141,22 +142,30 @@ export default function VideoWorkspace() {
     })
   }
 
-  const createRecord = (status: VideoGenerationRecord['status']): VideoGenerationRecord => ({
-    id: newId(),
-    createdAt: Date.now(),
-    prompt: prompt.trim(),
-    model: model.trim(),
-    config: {
-      baseUrl: config.baseUrl,
-      model: config.model,
-      size: config.size,
-      resolution: config.resolution,
-      seconds: config.seconds,
-      timeout: config.timeout,
-      stream: config.stream,
-    },
-    status,
-  })
+  const createRecord = async (status: VideoGenerationRecord['status']): Promise<VideoGenerationRecord> => {
+    const referenceImageIds = await Promise.all(
+      references.map((dataUrl) => storeImage(dataUrl, 'upload')),
+    )
+    return {
+      id: newId(),
+      createdAt: Date.now(),
+      prompt: prompt.trim(),
+      model: model.trim(),
+      config: {
+        baseUrl: config.baseUrl,
+        model: config.model,
+        size: config.size,
+        resolution: config.resolution,
+        seconds: config.seconds,
+        timeout: config.timeout,
+        stream: config.stream,
+      },
+      referenceImageIds,
+      referenceImageDataUrls: [...references],
+      referenceImageCount: references.length,
+      status,
+    }
+  }
 
   const submit = () => {
     if (!prompt.trim()) {
@@ -169,18 +178,23 @@ export default function VideoWorkspace() {
       return
     }
 
-    const record = createRecord(hasRunningTask ? 'queued' : 'running')
-    setRecords((items) => [record, ...items])
-    setActiveRecordId(record.id)
-    void persistRecord(record)
+    void createRecord(hasRunningTask ? 'queued' : 'running')
+      .then((record) => {
+        setRecords((items) => [record, ...items])
+        setActiveRecordId(record.id)
+        void persistRecord(record)
 
-    const item: QueueItem = { ...record, references: [...references] }
-    if (hasRunningTask) {
-      queueRef.current.push(item)
-      showToast('已加入视频生成队列', 'success')
-      return
-    }
-    void runQueueItem(item)
+        const item: QueueItem = { ...record, references: [...references] }
+        if (hasRunningTask) {
+          queueRef.current.push(item)
+          showToast('已加入视频生成队列', 'success')
+          return
+        }
+        void runQueueItem(item)
+      })
+      .catch((error) => {
+        showToast(error instanceof Error ? error.message : '参考图保存失败', 'error')
+      })
   }
 
   const runQueueItem = async (item: QueueItem) => {
@@ -239,18 +253,36 @@ export default function VideoWorkspace() {
     abortRef.current?.abort()
   }
 
-  const reuseRecord = (record: VideoGenerationRecord) => {
+  const getRecordReferenceDataUrls = async (record: VideoGenerationRecord) => {
+    if (record.referenceImageDataUrls?.length) return [...record.referenceImageDataUrls]
+    const ids = record.referenceImageIds ?? []
+    if (!ids.length) return []
+    const dataUrls = await Promise.all(ids.map((id) => ensureImageCached(id)))
+    return dataUrls.filter((dataUrl): dataUrl is string => Boolean(dataUrl))
+  }
+
+  const reuseRecord = async (record: VideoGenerationRecord) => {
     setPrompt(record.prompt)
     setModel(record.model)
     setSize(record.config.size)
     setResolution(record.config.resolution)
     setSeconds(record.config.seconds)
+    setReferences(await getRecordReferenceDataUrls(record))
     setActiveRecordId(record.id)
     showToast('已复用这条记录的参数', 'success')
   }
 
-  const retryRecord = (record: VideoGenerationRecord) => {
-    reuseRecord(record)
+  const retryRecord = async (record: VideoGenerationRecord) => {
+    const retryReferences = await getRecordReferenceDataUrls(record)
+    const referenceImageIds = record.referenceImageIds?.length
+      ? record.referenceImageIds
+      : await Promise.all(retryReferences.map((dataUrl) => storeImage(dataUrl, 'upload')))
+    setPrompt(record.prompt)
+    setModel(record.model)
+    setSize(record.config.size)
+    setResolution(record.config.resolution)
+    setSeconds(record.config.seconds)
+    setReferences(retryReferences)
     const retryItem: QueueItem = {
       ...record,
       id: newId(),
@@ -259,7 +291,10 @@ export default function VideoWorkspace() {
       error: undefined,
       task: undefined,
       video: undefined,
-      references: [],
+      referenceImageIds,
+      referenceImageDataUrls: retryReferences,
+      referenceImageCount: retryReferences.length,
+      references: retryReferences,
     }
     setRecords((items) => [retryItem, ...items])
     setActiveRecordId(retryItem.id)
@@ -417,8 +452,8 @@ export default function VideoWorkspace() {
           hasRunningTask={hasRunningTask}
           elapsedSeconds={elapsedSeconds}
           onDownload={downloadVideo}
-          onReuse={reuseRecord}
-          onRetry={retryRecord}
+          onReuse={(record) => void reuseRecord(record)}
+          onRetry={(record) => void retryRecord(record)}
         />
       </div>
 

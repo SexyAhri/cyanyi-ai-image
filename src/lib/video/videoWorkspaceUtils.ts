@@ -25,11 +25,14 @@ export const resolutionOptions = [
 ]
 
 export function stripTransientVideoUrl(record: VideoGenerationRecord): VideoGenerationRecord {
-  if (!record.video?.remoteUrl?.startsWith('blob:')) return record
+  const baseRecord = record.referenceImageDataUrls
+    ? { ...record, referenceImageDataUrls: undefined }
+    : record
+  if (!baseRecord.video?.remoteUrl?.startsWith('blob:')) return baseRecord
   return {
-    ...record,
+    ...baseRecord,
     video: {
-      ...record.video,
+      ...baseRecord.video,
       remoteUrl: undefined,
     },
   }
