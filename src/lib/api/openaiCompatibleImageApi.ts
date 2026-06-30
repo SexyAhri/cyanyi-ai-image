@@ -144,17 +144,23 @@ function getStreamEventErrorMessage(event: Record<string, unknown>): string | nu
   return null
 }
 
-function parseServerSentEventBlock(block: string): string | null {
+function parseServerSentEventBlock(block: string): { data: string; eventType?: string } | null {
   const dataLines: string[] = []
+  let eventType: string | undefined
   for (const line of block.split(/\r?\n/)) {
     if (!line || line.startsWith(':')) continue
+    if (line.startsWith('event:')) {
+      const rawEventType = line.slice(6).replace(/^ /, '').trim()
+      if (rawEventType) eventType = rawEventType
+      continue
+    }
     if (!line.startsWith('data:')) continue
     dataLines.push(line.slice(5).replace(/^ /, ''))
   }
 
   const data = dataLines.join('\n').trim()
   if (!data || data === '[DONE]') return null
-  return data
+  return { data, eventType }
 }
 
 async function readJsonServerSentEvents(response: Response, onEvent: (event: Record<string, unknown>) => void | Promise<void>, onActivity?: () => void): Promise<void> {
@@ -167,16 +173,19 @@ async function readJsonServerSentEvents(response: Response, onEvent: (event: Rec
 
   const processBlock = async (block: string) => {
     if (block.split(/\r?\n/).some((line) => line.startsWith('data:'))) hasDataLine = true
-    const data = parseServerSentEventBlock(block)
-    if (!data) return
+    const parsed = parseServerSentEventBlock(block)
+    if (!parsed) return
 
     let event: unknown
     try {
-      event = JSON.parse(data)
+      event = JSON.parse(parsed.data)
     } catch {
-      throw new Error(appendStreamingFormatHint(data))
+      throw new Error(appendStreamingFormatHint(parsed.data))
     }
     if (!isRecordValue(event)) return
+    if (parsed.eventType && !getStringValue(event, 'type') && !getStringValue(event, 'object')) {
+      event.type = parsed.eventType
+    }
 
     const errorMessage = getStreamEventErrorMessage(event)
     if (errorMessage) throw new Error(errorMessage)

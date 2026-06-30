@@ -369,18 +369,21 @@ async function parseVideoStreamResponse(
   timeout.signal.addEventListener('abort', cancelReader, { once: true })
 
   const processBlock = async (block: string) => {
-    const data = parseServerSentEventBlock(block)
-    if (!data) return
+    const parsed = parseServerSentEventBlock(block)
+    if (!parsed) return
     sawData = true
 
     let event: unknown
     try {
-      event = JSON.parse(data)
+      event = JSON.parse(parsed.data)
     } catch {
-      const markdownVideo = extractVideoUrlFromText(data)
+      const markdownVideo = extractVideoUrlFromText(parsed.data)
       if (markdownVideo) lastVideo = await createVideoAssetFromUrl(markdownVideo, signal)
-      else throw new Error(appendStreamingFormatHint(data))
+      else throw new Error(appendStreamingFormatHint(parsed.data))
       return
+    }
+    if (parsed.eventType && event && typeof event === 'object' && !getStringByKeys(event, ['type', 'event'])) {
+      (event as Record<string, unknown>).type = parsed.eventType
     }
 
     const error = getStreamErrorMessage(event)
@@ -426,16 +429,22 @@ async function parseVideoStreamResponse(
   return { status: 'pending' }
 }
 
-function parseServerSentEventBlock(block: string): string | null {
+function parseServerSentEventBlock(block: string): { data: string; eventType?: string } | null {
   const dataLines: string[] = []
+  let eventType: string | undefined
   for (const line of block.split(/\r?\n/)) {
     if (!line || line.startsWith(':')) continue
+    if (line.startsWith('event:')) {
+      const rawEventType = line.slice(6).replace(/^ /, '').trim()
+      if (rawEventType) eventType = rawEventType
+      continue
+    }
     if (!line.startsWith('data:')) continue
     dataLines.push(line.slice(5).replace(/^ /, ''))
   }
   const data = dataLines.join('\n').trim()
   if (!data || data === '[DONE]') return null
-  return data
+  return { data, eventType }
 }
 
 async function createVideoAssetFromPayload(

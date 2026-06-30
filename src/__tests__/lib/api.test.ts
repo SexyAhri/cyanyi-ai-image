@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS, type ApiProfile, type AppSettings } from '../../types'
 import { DEFAULT_SETTINGS } from '../../lib/api/apiProfiles'
 import { callImageApi } from '../../lib/api/api'
+import * as canvasImage from '../../lib/gallery/canvasImage'
 
 function withOpenAIProfile(profileOverrides: Partial<ApiProfile>, settingsOverrides: Partial<AppSettings> = {}): AppSettings {
   const activeProfileId = DEFAULT_SETTINGS.activeProfileId
@@ -466,6 +467,41 @@ describe('callImageApi', () => {
     expect(result.rawImageUrls).toEqual(['https://oss.example.com/non-stream.webp'])
   })
 
+  it('routes gemini-provider gpt-image-2 mask edits to the OpenAI-compatible Images API', async () => {
+    vi.spyOn(canvasImage, 'imageDataUrlToPngBlob').mockResolvedValue(new Blob(['image'], { type: 'image/png' }))
+    vi.spyOn(canvasImage, 'maskDataUrlToPngBlob').mockResolvedValue(new Blob(['mask'], { type: 'image/png' }))
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: [{
+        b64_json: 'aW1hZ2U=',
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await callImageApi({
+      settings: withOpenAIProfile({
+        provider: 'gemini',
+        baseUrl: 'https://ai.cyanyi.com/v1',
+        apiKey: 'newapi-key',
+        model: 'gpt-image-2',
+        apiMode: 'images',
+        apiProxy: false,
+      }),
+      prompt: 'edit prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: ['data:image/png;base64,aW1hZ2U='],
+      maskDataUrl: 'data:image/png;base64,bWFzaw==',
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toBe('https://ai.cyanyi.com/v1/images/edits')
+    const body = (init as RequestInit).body
+    expect(body).toBeInstanceOf(FormData)
+    expect(result.images).toEqual(['data:image/jpeg;base64,aW1hZ2U='])
+  })
+
   it('does not synthesize actual quality in Codex CLI mode when the API omits it', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       output_format: 'png',
@@ -703,6 +739,40 @@ describe('callImageApi', () => {
         size: '1448x1086',
       },
       revisedPrompts: [undefined],
+    })
+  })
+
+  it('parses Images API completed events when the event type is carried by the SSE event header', async () => {
+    const streamBody = [
+      'event: image_generation.completed',
+      'data: {"b64_json":"ZmluYWw=","size":"3840x2160","quality":"high","output_format":"jpeg"}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(streamBody, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    }))
+
+    const result = await callImageApi({
+      settings: withOpenAIProfile({
+        apiKey: 'test-key',
+        apiMode: 'images',
+        streamImages: true,
+      }),
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, size: '3840x2160', output_format: 'jpeg' },
+      inputImageDataUrls: [],
+    } as any)
+
+    expect(result).toMatchObject({
+      images: ['data:image/jpeg;base64,ZmluYWw='],
+      actualParams: {
+        output_format: 'jpeg',
+        quality: 'high',
+        size: '3840x2160',
+      },
     })
   })
 
